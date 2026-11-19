@@ -154,3 +154,13 @@ Finer topologies at the same 24,000-passage budget, re-ingested from the same pa
 | 1,024 | 2,981 | 89.80% | 1.62 ms | 32.82 ms | 43.85 ms |
 
 The leaf-2,048 profile ran directly after that index was written and its cache preparation took twice as long, so its latency is suspect.
+
+Leaf 1,024 with larger budgets (the 24,000 row is a rerun of the earlier profile, which overwrote its file; recall matched and timing moved by about 5 ms):
+
+| Leaf size | Chunk budget | Recall@100 | Query mean | Query p95 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,024 | 24,000 | 89.80% | 27.57 ms | 36.34 ms |
+| 1,024 | 36,000 | 90.60% | 36.19 ms | 47.70 ms |
+| 1,024 | 48,000 | 90.80% | 41.29 ms | 52.18 ms |
+
+Leaf 1,024 at 36,000 matches the coarse index at 48,000 (90.60%) slightly faster, and returns diminish beyond it. Neither topology reaches the 91.60% Elasticsearch development recall below 96,000 scanned passages.

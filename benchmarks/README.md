@@ -144,3 +144,13 @@ Raising the budget recovers recall, with roughly linear cost (MaxScore rescue, i
 | 192,000 | 91.60% | 178.27 ms | 233.39 ms |
 
 Frozen Elasticsearch reached 91.60% development Recall@100 in the audit.
+
+Finer topologies at the same 24,000-passage budget, re-ingested from the same passages and vectors:
+
+| Leaf size | Regions | Recall@100 | Routing mean | Query mean | Query p95 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8,192 | 365 | 88.40% | 0.20 ms | 28.96 ms | 42.00 ms |
+| 2,048 | 1,503 | 89.80% | 1.22 ms | 49.04 ms | 64.97 ms |
+| 1,024 | 2,981 | 89.80% | 1.62 ms | 32.82 ms | 43.85 ms |
+
+The leaf-2,048 profile ran directly after that index was written and its cache preparation took twice as long, so its latency is suspect.

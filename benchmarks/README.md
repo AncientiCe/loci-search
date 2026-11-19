@@ -41,6 +41,8 @@ The latency columns summarize all recorded warm sequential queries. The [machine
 | HotpotQA 1M, frozen FiQA transfer | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 20.64 ms | 30.38 ms |
 | HotpotQA 1M, MaxScore rescue | 1,000,000 | 320 × 3 | Loci regional | 86.25% | 27.65 ms | 39.07 ms |
 | HotpotQA 1M, MaxScore rescue | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 21.24 ms | 32.78 ms |
+| HotpotQA 1M, int8 scan | 1,000,000 | 320 × 3 | Loci regional | 86.25% | 24.32 ms | 34.17 ms |
+| HotpotQA 1M, int8 scan | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 22.72 ms | 33.32 ms |
 
 ## Loci preparation timings
 
@@ -57,6 +59,7 @@ The latency columns summarize all recorded warm sequential queries. The [machine
 | NFCorpus harness synthetic smoke | 6.61 ms | 1.18 ms | 10.56 ms | 0.32 ms |
 | HotpotQA 1M, frozen FiQA transfer | — | 68256.07 ms | — | 20237.52 ms |
 | HotpotQA 1M, MaxScore rescue | — | 5782.56 ms | — | 21426.41 ms |
+| HotpotQA 1M, int8 scan | — | 18910.61 ms | — | 21436.15 ms |
 
 An em dash denotes a timing absent from the recorded report. Fixtures and smoke runs use synthetic inputs. The HotpotQA head-to-head omitted the global control. The MaxScore run opened the index with a warm operating-system file cache.
 
@@ -124,3 +127,5 @@ Measured over 250 development queries with MaxScore rescue. The int8 scan scores
 | int8, re-score 1600 | 11.14 ms | 30.21 ms | 41.35 ms | 88.40% | 250 of 250 |
 
 The held-out run uses 400, the smallest depth with identical development rankings. Single-pass p95 varies by about 2 ms between runs.
+
+On the 320 held-out queries with re-score depth 400, Loci regional p95 fell from 39.07 ms to 34.17 ms against 33.32 ms for Elasticsearch in the same interleaved run. Recall@100 stayed at 86.25%, and all 960 regional traces matched the MaxScore run on rankings and candidates.

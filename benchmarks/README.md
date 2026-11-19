@@ -164,3 +164,5 @@ Leaf 1,024 with larger budgets (the 24,000 row is a rerun of the earlier profile
 | 1,024 | 48,000 | 90.80% | 41.29 ms | 52.18 ms |
 
 Leaf 1,024 at 36,000 matches the coarse index at 48,000 (90.60%) slightly faster, and returns diminish beyond it. Neither topology reaches the 91.60% Elasticsearch development recall below 96,000 scanned passages.
+
+Seeding more leaf entries into routing (leaf 1,024, 24,000 chunks) did not recover the misses: Recall@100 was 89.80% with 2 entries and 90.00% with 8, 24, or 64, with p95 between 34.97 ms and 50.20 ms across single-pass runs. The remaining misses lie in leaves whose centroids score low for the query even when the passage itself is among its nearest neighbors, so region probing alone does not reach them cheaply.

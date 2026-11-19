@@ -4435,6 +4435,231 @@
           "p95_ms": 52.1751
         }
       ]
+    },
+    {
+      "phase": "hotpotqa-1m leaf 1024, 24000 chunks, routing entries 8",
+      "source": "runs/hotpotqa-1m/profile-leaf1024-chunks-24000-entries-8.json",
+      "index": "runs/hotpotqa-1m/loci-leaf1024.sqlite",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 400,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "routing_entries": 8,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 27213.865999999998,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 4.712464799999999,
+          "p50_ms": 3.5987,
+          "p95_ms": 11.924000000000001
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 1.4650291999999998,
+          "p50_ms": 1.4059000000000004,
+          "p95_ms": 1.7848999999999997
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 10.580692000000003,
+          "p50_ms": 10.341099999999999,
+          "p95_ms": 12.7665
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 7.592909200000006,
+          "p50_ms": 7.501900000000003,
+          "p95_ms": 10.538599999999999
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.7017243999999995,
+          "p50_ms": 0.651,
+          "p95_ms": 1.0393
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 2.1544784,
+          "p50_ms": 2.0683,
+          "p95_ms": 3.367
+        },
+        {
+          "phase": "other",
+          "mean_ms": 2.6582836000000025,
+          "p50_ms": 2.5373000000000054,
+          "p95_ms": 3.7833999999999968
+        },
+        {
+          "phase": "total",
+          "mean_ms": 29.86558160000002,
+          "p50_ms": 28.671100000000003,
+          "p95_ms": 40.7407
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m leaf 1024, 24000 chunks, routing entries 24",
+      "source": "runs/hotpotqa-1m/profile-leaf1024-chunks-24000-entries-24.json",
+      "index": "runs/hotpotqa-1m/loci-leaf1024.sqlite",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 400,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "routing_entries": 24,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 27467.094500000003,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 5.408817599999995,
+          "p50_ms": 4.1929,
+          "p95_ms": 13.2931
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 1.6672116,
+          "p50_ms": 1.6206000000000003,
+          "p95_ms": 2.1209999999999996
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 12.1480184,
+          "p50_ms": 11.755199999999995,
+          "p95_ms": 15.843899999999998
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 8.733166399999998,
+          "p50_ms": 8.456500000000004,
+          "p95_ms": 13.413100000000007
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.8179115999999992,
+          "p50_ms": 0.7675,
+          "p95_ms": 1.1628
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 2.5028244000000006,
+          "p50_ms": 2.2913,
+          "p95_ms": 4.0747
+        },
+        {
+          "phase": "other",
+          "mean_ms": 3.1857156000000035,
+          "p50_ms": 3.0747000000000035,
+          "p95_ms": 4.423700000000011
+        },
+        {
+          "phase": "total",
+          "mean_ms": 34.46366560000001,
+          "p50_ms": 32.5884,
+          "p95_ms": 50.1978
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m leaf 1024, 24000 chunks, routing entries 64",
+      "source": "runs/hotpotqa-1m/profile-leaf1024-chunks-24000-entries-64.json",
+      "index": "runs/hotpotqa-1m/loci-leaf1024.sqlite",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 400,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "routing_entries": 64,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 26012.7661,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 4.1141556,
+          "p50_ms": 3.2069,
+          "p95_ms": 10.2438
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 1.251902,
+          "p50_ms": 1.2389999999999999,
+          "p95_ms": 1.4344
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 9.572295999999998,
+          "p50_ms": 9.619399999999997,
+          "p95_ms": 10.443699999999998
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 6.7660751999999995,
+          "p50_ms": 6.786000000000001,
+          "p95_ms": 8.7556
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.6279252000000008,
+          "p50_ms": 0.618,
+          "p95_ms": 0.7197
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 1.876578800000001,
+          "p50_ms": 1.8155999999999999,
+          "p95_ms": 2.6865
+        },
+        {
+          "phase": "other",
+          "mean_ms": 2.2573044000000015,
+          "p50_ms": 2.1942999999999984,
+          "p95_ms": 2.9365000000000023
+        },
+        {
+          "phase": "total",
+          "mean_ms": 26.466237199999995,
+          "p50_ms": 25.467,
+          "p95_ms": 34.9669
+        }
+      ]
     }
   ],
   "development": {

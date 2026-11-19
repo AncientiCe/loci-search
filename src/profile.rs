@@ -43,6 +43,7 @@ pub struct Report {
     config: SearchConfig,
     preparation_ms: f64,
     posting_payload_bytes: usize,
+    quantized_vector_bytes: usize,
     phases: Vec<Summary>,
     signatures: Vec<Signature>,
 }
@@ -69,6 +70,7 @@ pub fn regional(engine: &mut Engine, queries: &[Query], config: &SearchConfig) -
     engine.prepare_regional()?;
     let preparation_ms = started.elapsed().as_secs_f64() * 1000.0;
     let posting_payload_bytes = engine.regional_index().payload_bytes();
+    let quantized_vector_bytes = engine.regional_index().quantized_bytes();
     for query in queries.iter().take(32) {
         engine.search(query, crate::ranking::Strategy::Regional, config)?;
     }
@@ -147,6 +149,7 @@ pub fn regional(engine: &mut Engine, queries: &[Query], config: &SearchConfig) -
         config: config.clone(),
         preparation_ms,
         posting_payload_bytes,
+        quantized_vector_bytes,
         phases,
         signatures,
     })

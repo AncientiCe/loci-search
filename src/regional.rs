@@ -13,7 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod quantized;
 mod wand;
+
+use quantized::Quantized;
 
 // FTS5 truncates longer tokens. Use SQLite for rescue when that can affect matching.
 const FTS5_TOKEN_BYTES: usize = 32768;
@@ -36,6 +39,7 @@ pub(crate) struct RegionalIndex {
     fts5_compatible: bool,
     rescue_norms: Vec<f64>,
     regional_norms: Vec<f64>,
+    quantized: Quantized,
 }
 
 pub(crate) struct LexicalRescue {
@@ -108,6 +112,7 @@ impl RegionalIndex {
             fts5_compatible,
             rescue_norms,
             regional_norms,
+            quantized: Quantized::build(&engine.vectors),
         })
     }
 
@@ -170,6 +175,10 @@ impl RegionalIndex {
     }
 
     /// Bytes reserved for posting payloads and length factors, excluding map/string overhead.
+    pub fn quantized_bytes(&self) -> usize {
+        self.quantized.bytes()
+    }
+
     pub fn payload_bytes(&self) -> usize {
         self.postings
             .values()
@@ -309,10 +318,12 @@ pub(crate) fn select(
                 if rescue_scores.is_some_and(|rescue| !rescue.contains(id)) {
                     dense_only += 1;
                 }
-                nearest.push(Neighbor {
-                    id,
-                    similarity: cosine(vector, &engine.vectors[id]),
-                });
+                let similarity = if config.regional_rescore.is_some() {
+                    index.quantized.similarity(vector, id)
+                } else {
+                    cosine(vector, &engine.vectors[id])
+                };
+                nearest.push(Neighbor { id, similarity });
             }
         }
         timer.finish(profile);
@@ -362,6 +373,15 @@ pub(crate) fn select(
     work.regional_chunks_scored = nearest.len();
     work.vector_comparisons = nearest.len();
     work.regional_or_rescue_chunks_scored = rescue_scores.map(|rescue| rescue.count + dense_only);
+    if let Some(rescore) = config.regional_rescore {
+        let timer = Timer::start(profile, "vectors");
+        retain_top(&mut nearest, rescore, |a, b| b.cmp(a));
+        for neighbor in &mut nearest {
+            neighbor.similarity = cosine(vector, &engine.vectors[neighbor.id]);
+        }
+        work.rescored_vector_comparisons = Some(nearest.len());
+        timer.finish(profile);
+    }
     let timer = Timer::start(profile, "selection");
     let (lexical, _) = top_lexical(&lexical, config.depth);
     retain_top(&mut nearest, config.depth, |a, b| b.cmp(a));

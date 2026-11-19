@@ -35,6 +35,9 @@ pub struct SearchConfig {
     pub rescue: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rescue_max_scored: Option<usize>,
+    /// Scan regions with int8 vectors and re-score this many best candidates exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regional_rescore: Option<usize>,
     pub routing_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regional_rerank: Option<RegionalRerank>,
@@ -87,6 +90,7 @@ impl Default for SearchConfig {
             max_postings: 60_000,
             rescue: 40,
             rescue_max_scored: None,
+            regional_rescore: None,
             routing_ms: 0,
             regional_rerank: None,
         }
@@ -116,6 +120,11 @@ impl SearchConfig {
                 .is_none_or(|budget| budget >= self.rescue && budget > 0),
             "bounded rescue must allow at least the configured number of rescue hits"
         );
+        ensure!(
+            self.regional_rescore
+                .is_none_or(|rescore| rescore >= self.depth),
+            "regional re-scoring must keep at least the candidate depth"
+        );
         if let Some(weights) = self.regional_rerank {
             weights.validate()?;
         }
@@ -135,6 +144,8 @@ pub struct Work {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub regional_or_rescue_chunks_scored: Option<usize>,
     pub vector_comparisons: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescored_vector_comparisons: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elasticsearch_took_ms: Option<u64>,
     pub routing_comparisons: usize,

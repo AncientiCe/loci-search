@@ -70,6 +70,9 @@ enum Command {
         /// Cap the number of passages scored by global lexical rescue.
         #[arg(long)]
         rescue_max_scored: Option<usize>,
+        /// Scan regions with int8 vectors and re-score this many candidates exactly.
+        #[arg(long)]
+        regional_rescore: Option<usize>,
     },
     /// Generate deterministic passages, embeddings, and relevance judgments.
     Fixture {
@@ -111,6 +114,9 @@ enum Command {
         /// Cap the number of passages scored by global lexical rescue.
         #[arg(long)]
         rescue_max_scored: Option<usize>,
+        /// Scan regions with int8 vectors and re-score this many candidates exactly.
+        #[arg(long)]
+        regional_rescore: Option<usize>,
         #[command(flatten)]
         settings: Settings,
     },
@@ -150,6 +156,9 @@ enum Command {
         /// Change only the regional lexical rescue scoring cap in a frozen comparison.
         #[arg(long, requires = "frozen_report")]
         rescue_max_scored: Option<usize>,
+        /// Change only regional int8 scanning and its exact re-score depth in a frozen comparison.
+        #[arg(long, requires = "frozen_report")]
+        regional_rescore: Option<usize>,
         /// Loopback URL for a prepared single-shard Elasticsearch index.
         #[arg(long, requires_all = ["db", "elastic_index"], conflicts_with = "fixture")]
         elastic_url: Option<String>,
@@ -192,6 +201,7 @@ impl From<Settings> for SearchConfig {
             max_postings: settings.max_postings,
             rescue: settings.rescue,
             rescue_max_scored: None,
+            regional_rescore: None,
             routing_ms: settings.routing_ms,
             regional_rerank: None,
         }
@@ -240,11 +250,15 @@ fn main() -> Result<()> {
             frozen_report,
             out,
             rescue_max_scored,
+            regional_rescore,
         } => {
             let mut engine = Engine::open(&db)?;
             let mut frozen = json::<bench::FrozenComparison>(&frozen_report)?;
             if let Some(cap) = rescue_max_scored {
                 frozen = frozen.with_bounded_rescue(cap)?;
+            }
+            if let Some(rescore) = regional_rescore {
+                frozen = frozen.with_regional_rescore(rescore)?;
             }
             let config = frozen.regional_config(&engine)?;
             let queries = jsonl::<Query>(&queries)?;
@@ -286,6 +300,7 @@ fn main() -> Result<()> {
             explain,
             regional_rerank,
             rescue_max_scored,
+            regional_rescore,
             settings,
         } => {
             let query = json::<Query>(&query)?;
@@ -303,6 +318,13 @@ fn main() -> Result<()> {
                     "--rescue-max-scored requires regional search"
                 );
                 config.rescue_max_scored = rescue_max_scored;
+            }
+            if regional_rescore.is_some() {
+                ensure!(
+                    strategy == Strategy::Regional,
+                    "--regional-rescore requires regional search"
+                );
+                config.regional_rescore = regional_rescore;
             }
             let result = Engine::open(&db)?.search(&query, strategy, &config)?;
             if explain {
@@ -331,6 +353,7 @@ fn main() -> Result<()> {
             frozen_report,
             regional_rerank,
             rescue_max_scored,
+            regional_rescore,
             elastic_url,
             elastic_index,
             settings,
@@ -378,6 +401,9 @@ fn main() -> Result<()> {
                     }
                     if let Some(cap) = rescue_max_scored {
                         frozen = frozen.with_bounded_rescue(cap)?;
+                    }
+                    if let Some(rescore) = regional_rescore {
+                        frozen = frozen.with_regional_rescore(rescore)?;
                     }
                     bench::evaluate_frozen(&mut engine, &queries, &run, &frozen, &client, traces)?
                 } else {

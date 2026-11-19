@@ -108,3 +108,5 @@ Measured over 250 development queries with frozen regional settings. WAND and Ma
 | MaxScore | 4.62 ms | 10.91 ms | 28.56 ms | 36.84 ms |
 
 On the 320 held-out queries, MaxScore scored a mean of 494 rescue passages instead of 894,306. All 960 regional traces matched the original run on rankings, candidates, and scores.
+
+A `-C target-cpu=native` build (AVX2 and FMA) cut the vectors and memberships phase from 12.98 ms to 10.80 ms mean but query p95 only from 36.84 ms to 35.98 ms, with identical signatures. The phase reads about 98 MB of scattered float32 vectors per query and is memory-bound, so the default build stays portable.

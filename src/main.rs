@@ -112,6 +112,9 @@ enum Command {
         /// Separate development-query JSONL used to tune the comparison.
         #[arg(long, requires = "elastic_url", conflicts_with = "frozen_report")]
         dev: Option<PathBuf>,
+        /// Carry over Loci settings from this report and tune only Elasticsearch on the new dev split.
+        #[arg(long, requires = "dev")]
+        transfer_report: Option<PathBuf>,
         /// Reuse all settings and verify the original index statistics without tuning.
         #[arg(long, requires = "elastic_url")]
         frozen_report: Option<PathBuf>,
@@ -260,6 +263,7 @@ fn main() -> Result<()> {
             repeats,
             exact_queries,
             dev,
+            transfer_report,
             frozen_report,
             regional_rerank,
             elastic_url,
@@ -314,14 +318,26 @@ fn main() -> Result<()> {
                         queries: &dev,
                         elasticsearch: &client,
                     };
-                    bench::evaluate_comparison(
-                        &mut engine,
-                        &queries,
-                        &config,
-                        &run,
-                        development,
-                        traces,
-                    )?
+                    if let Some(path) = transfer_report {
+                        let source = json::<bench::FrozenComparison>(&path)?;
+                        bench::evaluate_transfer(
+                            &mut engine,
+                            &queries,
+                            &run,
+                            &source,
+                            development,
+                            traces,
+                        )?
+                    } else {
+                        bench::evaluate_comparison(
+                            &mut engine,
+                            &queries,
+                            &config,
+                            &run,
+                            development,
+                            traces,
+                        )?
+                    }
                 }
             } else {
                 bench::evaluate(&mut engine, &queries, &config, &run, traces)?

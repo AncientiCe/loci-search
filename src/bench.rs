@@ -39,6 +39,8 @@ pub struct Report {
     settings: Vec<Plan>,
     settings_frozen: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    native_settings_source: Option<Manifest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     elasticsearch: Option<elastic::Info>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tuning: Option<Tuning>,
@@ -138,6 +140,24 @@ pub struct FrozenComparison {
 }
 
 impl FrozenComparison {
+    fn validate_plans(&self) -> Result<()> {
+        let expected = STRATEGIES.into_iter().chain([Strategy::Elasticsearch]);
+        ensure!(
+            self.settings.iter().map(|plan| plan.strategy).eq(expected),
+            "comparison report must contain the four original strategies"
+        );
+        for plan in &self.settings {
+            plan.config.validate()?;
+            ensure!(
+                plan.config.limit == self.config.limit
+                    && plan.config.depth == self.config.depth
+                    && plan.elastic.is_some() == (plan.strategy == Strategy::Elasticsearch),
+                "invalid comparison strategy configuration"
+            );
+        }
+        Ok(())
+    }
+
     pub fn with_regional_rerank(mut self, weights: RegionalRerank) -> Result<Self> {
         let plan = self
             .settings
@@ -192,6 +212,8 @@ impl Plan {
 #[derive(Debug, Serialize)]
 struct Tuning {
     queries: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    excluded_dev_query_ids: Vec<String>,
     selection: &'static str,
     trials: Vec<Trial>,
 }
@@ -233,7 +255,10 @@ pub struct Development<'a> {
 }
 
 enum Comparison<'a> {
-    Tune(Development<'a>),
+    Tune {
+        development: Development<'a>,
+        native_source: Option<&'a FrozenComparison>,
+    },
     Frozen {
         report: &'a FrozenComparison,
         client: &'a elastic::Client,
@@ -243,7 +268,7 @@ enum Comparison<'a> {
 impl Comparison<'_> {
     fn client(&self) -> &elastic::Client {
         match self {
-            Self::Tune(dev) => dev.elasticsearch,
+            Self::Tune { development, .. } => development.elasticsearch,
             Self::Frozen { client, .. } => client,
         }
     }
@@ -262,7 +287,31 @@ pub fn evaluate_comparison(
         queries,
         config,
         run,
-        Some(Comparison::Tune(development)),
+        Some(Comparison::Tune {
+            development,
+            native_source: None,
+        }),
+        traces,
+    )
+}
+
+pub fn evaluate_transfer(
+    engine: &mut Engine,
+    queries: &[Query],
+    run: &Run,
+    report: &FrozenComparison,
+    development: Development<'_>,
+    traces: impl Write,
+) -> Result<Report> {
+    evaluate_with(
+        engine,
+        queries,
+        &report.config,
+        run,
+        Some(Comparison::Tune {
+            development,
+            native_source: Some(report),
+        }),
         traces,
     )
 }
@@ -343,6 +392,7 @@ fn evaluate_with(
         );
     }
     let settings_frozen = matches!(&comparison, Some(Comparison::Frozen { .. }));
+    let mut native_settings_source = None;
     if let Some(Comparison::Frozen { report, .. }) = &comparison {
         ensure!(
             report.index == engine.manifest
@@ -354,28 +404,15 @@ fn evaluate_with(
             elasticsearch.as_ref() == Some(&report.elasticsearch),
             "Elasticsearch version, index or primary-store statistics differ from the frozen report"
         );
-        let expected = STRATEGIES.into_iter().chain([Strategy::Elasticsearch]);
-        ensure!(
-            report
-                .settings
-                .iter()
-                .map(|plan| plan.strategy)
-                .eq(expected),
-            "frozen report must contain the four original strategies"
-        );
-        for plan in &report.settings {
-            plan.config.validate()?;
-            ensure!(
-                plan.config.limit == config.limit
-                    && plan.config.depth == config.depth
-                    && plan.elastic.is_some() == (plan.strategy == Strategy::Elasticsearch),
-                "invalid frozen strategy configuration"
-            );
-        }
+        report.validate_plans()?;
         settings.clone_from(&report.settings);
         eprintln!("Using frozen comparison settings");
     }
-    if let Some(Comparison::Tune(dev)) = &comparison {
+    if let Some(Comparison::Tune {
+        development: dev,
+        native_source,
+    }) = &comparison
+    {
         ensure!(
             config.depth <= 8_664,
             "Elasticsearch tuning requires depth <= 8664"
@@ -389,6 +426,12 @@ fn evaluate_with(
             !dev.queries.iter().any(|query| test_ids.contains(&query.id)),
             "development and test query IDs overlap"
         );
+        if let Some(source) = native_source {
+            source.validate_plans()?;
+            settings = source.settings[..STRATEGIES.len()].to_vec();
+            native_settings_source = Some(source.index.clone());
+            eprintln!("Carrying over Loci settings and tuning only Elasticsearch");
+        }
     }
     let started = Instant::now();
     eprintln!("Building the in-process HNSW control");
@@ -398,9 +441,16 @@ fn evaluate_with(
     engine.prepare_regional()?;
     let regional_prepare_ms = milliseconds(started);
     let regional_posting_payload_bytes = engine.regional_index().payload_bytes();
-    let tuning = if let Some(Comparison::Tune(dev)) = &comparison {
-        let (plans, tuning) = tune(engine, config, *dev)?;
-        settings.truncate(1);
+    let tuning = if let Some(Comparison::Tune {
+        development,
+        native_source,
+    }) = &comparison
+    {
+        let transfer = native_source.is_some();
+        let (plans, tuning) = tune(engine, config, *development, queries, transfer)?;
+        if !transfer {
+            settings.truncate(1);
+        }
         settings.extend(plans);
         Some(tuning)
     } else {
@@ -554,6 +604,7 @@ fn evaluate_with(
         config: config.clone(),
         settings,
         settings_frozen,
+        native_settings_source,
         elasticsearch,
         tuning,
         regional_minus_elasticsearch,
@@ -566,7 +617,41 @@ fn tune(
     engine: &mut Engine,
     config: &SearchConfig,
     dev: Development<'_>,
+    test_queries: &[Query],
+    recall_first: bool,
 ) -> Result<(Vec<Plan>, Tuning)> {
+    let normalized = |query: &Query| {
+        query
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let mut queries = Vec::new();
+    let mut excluded_dev_query_ids = Vec::new();
+    if recall_first {
+        let test_texts = test_queries.iter().map(normalized).collect::<BTreeSet<_>>();
+        for query in dev.queries {
+            if test_texts.contains(&normalized(query)) {
+                excluded_dev_query_ids.push(query.id.clone());
+            } else {
+                queries.push(query);
+            }
+        }
+        if !excluded_dev_query_ids.is_empty() {
+            eprintln!(
+                "Excluded {} dev queries with matching test text",
+                excluded_dev_query_ids.len()
+            );
+        }
+    } else {
+        queries.extend(dev.queries);
+    }
+    ensure!(
+        !queries.is_empty(),
+        "no development queries remain after excluding test overlap"
+    );
     let global = [0, 56, 184, 312, 568, 824]
         .into_iter()
         .map(|extra| {
@@ -615,12 +700,17 @@ fn tune(
         .collect::<Vec<_>>();
     let mut selected = Vec::new();
     let mut trials = Vec::new();
-    for grid in [global, regional, external] {
+    let grids = if recall_first {
+        vec![external]
+    } else {
+        vec![global, regional, external]
+    };
+    for grid in grids {
         let mut best: Option<(f64, f64, Plan)> = None;
         for plan in grid {
             let mut ndcg = 0.0;
             let mut recall = 0.0;
-            for query in dev.queries {
+            for &query in &queries {
                 let result = plan.search(engine, Some(dev.elasticsearch), query)?;
                 let ranked = result
                     .hits
@@ -633,17 +723,25 @@ fn tune(
                     .ok_or_else(|| anyhow::anyhow!("no positive dev judgment for {}", query.id))?;
                 recall += quality.recall_at_100.unwrap_or_default();
             }
-            ndcg /= dev.queries.len() as f64;
-            recall /= dev.queries.len() as f64;
+            ndcg /= queries.len() as f64;
+            recall /= queries.len() as f64;
             eprintln!(
                 "Dev {:?} trial {} nDCG@10 {ndcg:.4}, Recall@100 {recall:.4}",
                 plan.strategy,
                 trials.len() + 1
             );
-            if best.as_ref().is_none_or(|(high_ndcg, high_recall, _)| {
-                (ndcg, recall) > (*high_ndcg, *high_recall)
-            }) {
-                best = Some((ndcg, recall, plan.clone()));
+            let (primary, secondary) = if recall_first {
+                (recall, ndcg)
+            } else {
+                (ndcg, recall)
+            };
+            if best
+                .as_ref()
+                .is_none_or(|(best_primary, best_secondary, _)| {
+                    (primary, secondary) > (*best_primary, *best_secondary)
+                })
+            {
+                best = Some((primary, secondary, plan.clone()));
             }
             trials.push(Trial {
                 plan,
@@ -656,8 +754,13 @@ fn tune(
     Ok((
         selected,
         Tuning {
-            queries: dev.queries.len(),
-            selection: "highest dev nDCG@10, then Recall@100, then earliest trial",
+            queries: queries.len(),
+            excluded_dev_query_ids,
+            selection: if recall_first {
+                "highest dev Recall@100, then nDCG@10, then earliest trial"
+            } else {
+                "highest dev nDCG@10, then Recall@100, then earliest trial"
+            },
             trials,
         },
     ))

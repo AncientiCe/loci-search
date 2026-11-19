@@ -1,4 +1,4 @@
-"""Prepare BEIR FiQA and index exactly the same passages into Elasticsearch."""
+"""Prepare BEIR passages and index the same inputs into Elasticsearch."""
 
 import argparse
 import csv
@@ -14,15 +14,27 @@ from zipfile import ZipFile
 
 
 DIMENSIONS = 1024
-FILES = {
-    "corpus.parquet": "9b862c5f1d023435f71ebeb8f71942a8caf3b90b1b07b14b435e7a31623c2a52",
-    "dev.parquet": "729e3d1055cf679358d95d0631403ac978c1242d49b145a5e25ad4ce9e91f323",
-    "test.parquet": "d745fb2470b1d683c7897cef86b1f1ce73741332a9fb9426027556fa07e9d2fa",
-}
-EMBEDDING = {
-    "model_revision": "CohereLabs/beir-embed-english-v3:fiqa:" + FILES["corpus.parquet"],
-    "dimensions": DIMENSIONS,
-    "normalization": "l2",
+DATASETS = {
+    "fiqa": {
+        "archive_md5": "17918ed23cd04fb15047f73e6c3bd9d9",
+        "passages": 57_638,
+        "queries": (500, 648),
+        "embedding_files": {
+            "corpus.parquet": "9b862c5f1d023435f71ebeb8f71942a8caf3b90b1b07b14b435e7a31623c2a52",
+            "dev.parquet": "729e3d1055cf679358d95d0631403ac978c1242d49b145a5e25ad4ce9e91f323",
+            "test.parquet": "d745fb2470b1d683c7897cef86b1f1ce73741332a9fb9426027556fa07e9d2fa",
+        },
+    },
+    "nfcorpus": {
+        "archive_md5": "a89dba18a62ef92f7d323ec890a0d38d",
+        "passages": 3_633,
+        "queries": (324, 323),
+        "embedding_files": {
+            "corpus.parquet": "34703a489f88e1c0d7328d78b7c274c937cb0e4c807fcbfcb20aee5fe823687b",
+            "dev.parquet": "0eb57d19a83d4413eefa4b70facdc6f3b4d3b7fcb68c916caf7c2150d22f6a89",
+            "test.parquet": "39e6a8d051752b31e018dfa386b0ef044e748ca8881873009b0a02859f35b636",
+        },
+    },
 }
 
 
@@ -32,7 +44,7 @@ def digest(path, algorithm):
 
 
 def rows(archive, name):
-    with archive.open("fiqa/" + name) as stream:
+    with archive.open(name) as stream:
         for line in stream:
             yield json.loads(line)
 
@@ -41,20 +53,28 @@ def write_json(stream, row):
     stream.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def prepare(directory, dependencies):
+def prepare(directory, dependencies, dataset="fiqa"):
     if dependencies:
         sys.path.insert(0, str(dependencies.resolve()))
     import pyarrow.parquet as pq
 
-    if digest(directory / "fiqa.zip", "md5") != "17918ed23cd04fb15047f73e6c3bd9d9":
-        raise ValueError("BEIR FiQA archive checksum differs from the published checksum")
-    for name, checksum in FILES.items():
+    metadata = DATASETS[dataset]
+    archive_path = directory / f"{dataset}.zip"
+    if digest(archive_path, "md5") != metadata["archive_md5"]:
+        raise ValueError(f"BEIR {dataset} archive checksum differs from the published checksum")
+    embedding_files = metadata["embedding_files"]
+    for name, checksum in embedding_files.items():
         if digest(directory / name, "sha256") != checksum:
             raise ValueError(f"Unexpected SHA-256 for {name}")
+    embedding = {
+        "model_revision": f"CohereLabs/beir-embed-english-v3:{dataset}:" + embedding_files["corpus.parquet"],
+        "dimensions": DIMENSIONS,
+        "normalization": "l2",
+    }
 
-    with ZipFile(directory / "fiqa.zip") as archive:
-        documents = {row["_id"]: row for row in rows(archive, "corpus.jsonl")}
-        queries = {row["_id"]: row["text"] for row in rows(archive, "queries.jsonl")}
+    with ZipFile(archive_path) as archive:
+        documents = {row["_id"]: row for row in rows(archive, f"{dataset}/corpus.jsonl")}
+        queries = {row["_id"]: row["text"] for row in rows(archive, f"{dataset}/queries.jsonl")}
         data = pq.ParquetFile(directory / "corpus.parquet")
         seen = set()
         with (directory / "passages.partial").open("w", encoding="utf-8", newline="\n") as out:
@@ -67,16 +87,16 @@ def prepare(directory, dependencies):
                     document = documents[identifier]
                     text = "\n\n".join(value for value in (document["title"], document["text"]) if value)
                     write_json(out, {
-                        "id": identifier, "document": identifier, "revision": "beir-fiqa",
+                        "id": identifier, "document": identifier, "revision": f"beir-{dataset}",
                         "start": 0, "end": len(text.encode("utf-8")), "text": text, "vector": row["emb"],
                     })
-        if seen != documents.keys() or len(seen) != 57638:
-            raise ValueError("Corpus and embedding IDs do not match the full 57,638-document snapshot")
+        if seen != documents.keys() or len(seen) != metadata["passages"]:
+            raise ValueError(f"Corpus and embeddings differ from the full {metadata['passages']:,}-document snapshot")
         (directory / "passages.partial").replace(directory / "passages.jsonl")
         splits = {}
         for split in ("dev", "test"):
             judgments = defaultdict(dict)
-            with archive.open(f"fiqa/qrels/{split}.tsv") as binary:
+            with archive.open(f"{dataset}/qrels/{split}.tsv") as binary:
                 for row in csv.DictReader(io.TextIOWrapper(binary, encoding="utf-8"), delimiter="\t"):
                     identifier = row["corpus-id"]
                     if identifier not in seen:
@@ -95,12 +115,12 @@ def prepare(directory, dependencies):
                 for identifier in sorted(judgments):
                     write_json(out, {
                         "id": identifier, "text": queries[identifier], "vector": vectors[identifier],
-                        "embedding": EMBEDDING, "judgments": judgments[identifier],
+                        "embedding": embedding, "judgments": judgments[identifier],
                     })
             splits[split] = set(judgments)
-        if splits["dev"] & splits["test"] or len(splits["test"]) != 648:
-            raise ValueError("Expected independent development and 648-query test splits")
-    (directory / "embedding.json").write_text(json.dumps(EMBEDDING) + "\n", encoding="utf-8")
+        if splits["dev"] & splits["test"] or (len(splits["dev"]), len(splits["test"])) != metadata["queries"]:
+            raise ValueError(f"Expected independent development and test splits for {dataset}")
+    (directory / "embedding.json").write_text(json.dumps(embedding) + "\n", encoding="utf-8")
     print(f"Prepared {len(seen):,} passages, {len(splits['dev'])} dev queries and {len(splits['test'])} test queries")
 
 
@@ -173,13 +193,14 @@ def main():
     prep = actions.add_parser("prepare")
     prep.add_argument("directory", type=Path)
     prep.add_argument("--deps", type=Path)
+    prep.add_argument("--dataset", choices=DATASETS, default="fiqa")
     index = actions.add_parser("index")
     index.add_argument("directory", type=Path)
     index.add_argument("--url", default="http://127.0.0.1:19200")
     index.add_argument("--index", default="loci-fiqa")
     args = parser.parse_args()
     if args.command == "prepare":
-        prepare(args.directory, args.deps)
+        prepare(args.directory, args.deps, args.dataset)
     else:
         elastic_index(args.directory, args.url.rstrip("/"), args.index)
 

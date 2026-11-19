@@ -110,6 +110,35 @@ On the same 648 held-out queries and three warm sequential passes, the reranker 
 
 All 7,776 paired traces matched on candidate IDs and retrieval work. The Elasticsearch, SQLite BM25, and Loci global traces also matched on rankings and scores. The paired 95% bootstrap interval for the regional minus Elasticsearch Recall@100 difference was +6.79 to +10.64 percentage points.
 
+## Transfer the FiQA settings to NFCorpus
+
+Use the full [BEIR NFCorpus](https://huggingface.co/datasets/BeIR/nfcorpus) and the same published embedding model used for FiQA. Save these files in `runs/nfcorpus`.
+
+| Save as | Download |
+| --- | --- |
+| `nfcorpus.zip` | [BEIR archive](https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip) |
+| `corpus.parquet` | [Corpus embeddings](https://huggingface.co/datasets/CohereLabs/beir-embed-english-v3/resolve/f018922a46a51388348a307ec2fef28019a33026/nfcorpus/corpus/0000.parquet) |
+| `dev.parquet` | [Development query embeddings](https://huggingface.co/datasets/CohereLabs/beir-embed-english-v3/resolve/f018922a46a51388348a307ec2fef28019a33026/nfcorpus/queries/dev.parquet) |
+| `test.parquet` | [Test query embeddings](https://huggingface.co/datasets/CohereLabs/beir-embed-english-v3/resolve/f018922a46a51388348a307ec2fef28019a33026/nfcorpus/queries/test.parquet) |
+
+```sh
+python tools/fiqa.py prepare runs/nfcorpus --dataset nfcorpus --deps runs/fiqa/python-deps
+cargo run --locked --release -- ingest --db runs/nfcorpus/loci.sqlite --passages runs/nfcorpus/passages.jsonl --embedding runs/nfcorpus/embedding.json
+python tools/fiqa.py index runs/nfcorpus --index loci-nfcorpus
+cargo run --locked --release -- bench --db runs/nfcorpus/loci.sqlite --queries runs/nfcorpus/test.jsonl --dev runs/nfcorpus/dev.jsonl --transfer-report runs/fiqa/evaluation-recall/report.json --elastic-url http://127.0.0.1:19200 --elastic-index loci-nfcorpus --out runs/nfcorpus/evaluation
+```
+
+The transfer copies all three Loci configurations from the FiQA report, including the 92% cosine and 8% term coverage reranker. It tunes only Elasticsearch over six analyzer and HNSW configurations, prioritizing development Recall@100 and using nDCG@10 to break ties. One development query shared normalized text with a test query, so tuning used the remaining 323 development queries. Elasticsearch selected the English analyzer and 256 HNSW candidates. The held-out benchmark used all 3,633 passages and all 323 official test queries across three warm sequential passes.
+
+| Strategy | nDCG@10 | Recall@100 | Warm p95 |
+| --- | ---: | ---: | ---: |
+| SQLite BM25 | 0.3091 | 0.2342 | 3.38 ms |
+| Loci global hybrid | 0.3520 | 0.3215 | 11.53 ms |
+| Loci regional, frozen FiQA reranker | 0.3983 | 0.3541 | 1.85 ms |
+| Elasticsearch hybrid, tuned on NFCorpus dev | 0.3557 | 0.3299 | 20.70 ms |
+
+Regional recall was 2.42 percentage points higher, with a paired 95% bootstrap interval from +1.30 to +3.52 points. Its p95 was 91% lower in this end-to-end comparison, which includes Elasticsearch's loopback request and the original Elasticsearch reranker. Loci scored every passage for each query under the transferred routing budget, so these measurements describe a small-corpus run.
+
 ## Use an existing corpus
 
 ```sh

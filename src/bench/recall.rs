@@ -9,6 +9,145 @@ use serde::Serialize;
 use std::time::Instant;
 
 #[derive(Serialize)]
+pub struct RescueTuning {
+    queries: usize,
+    selection: &'static str,
+    baseline: RescueTrial,
+    trials: Vec<RescueTrial>,
+    pub selected: usize,
+}
+
+#[derive(Serialize)]
+struct RescueTrial {
+    max_scored: Option<usize>,
+    metrics: Metrics,
+    global_rescue: super::ScoredPassages,
+    regional_or_rescue: super::ScoredPassages,
+    budget_hits: usize,
+    queries_losing_recall: usize,
+    queries_with_changed_candidates: usize,
+}
+
+struct DevelopmentResult {
+    recall: f64,
+    candidates: Vec<String>,
+}
+
+pub fn tune_bounded_rescue(
+    engine: &mut Engine,
+    queries: &[Query],
+    source: &FrozenComparison,
+) -> Result<RescueTuning> {
+    validate_queries(engine, queries)?;
+    let config = source.regional_config(engine)?;
+    ensure!(
+        config.limit == 100 && config.rescue > 0 && config.rescue_max_scored.is_none(),
+        "tuning requires an unbounded regional baseline with rescue and exactly 100 results"
+    );
+    engine.prepare_regional()?;
+    for query in queries.iter().take(32) {
+        engine.search(query, Strategy::Regional, config)?;
+    }
+    let (baseline, original) = measure_rescue(engine, queries, config, None)?;
+    let corpus = engine.manifest.chunks;
+    let budgets = [4_000, 16_000, 64_000, 256_000, corpus]
+        .into_iter()
+        .filter(|&cap| cap >= config.rescue && cap <= corpus)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut trials = Vec::new();
+    for cap in budgets {
+        let mut trial_config = config.clone();
+        trial_config.rescue_max_scored = Some(cap);
+        let (trial, _) = measure_rescue(engine, queries, &trial_config, Some(&original))?;
+        eprintln!(
+            "Dev rescue cap {cap}: Recall@100 {:.4}, p95 {:.2} ms, mean coverage {:.2}%, capped {}, recall losses {}",
+            trial.metrics.recall_at_100,
+            trial.metrics.p95_ms,
+            100.0 * trial.regional_or_rescue.mean_corpus_fraction,
+            trial.budget_hits,
+            trial.queries_losing_recall
+        );
+        trials.push(trial);
+    }
+    let selected = trials.iter().filter(|trial| {
+        trial.queries_losing_recall == 0 && trial.regional_or_rescue.mean < baseline.regional_or_rescue.mean
+    }).min_by(|a, b| a.regional_or_rescue.mean.total_cmp(&b.regional_or_rescue.mean)
+        .then(a.metrics.p95_ms.total_cmp(&b.metrics.p95_ms))
+        .then(a.max_scored.cmp(&b.max_scored)))
+        .and_then(|trial| trial.max_scored)
+        .ok_or_else(|| anyhow::anyhow!("no tested rescue cap reduced scoring coverage with zero development queries losing recall"))?;
+    Ok(RescueTuning {
+        queries: queries.len(),
+        selection: "zero dev queries losing Recall@100, then lowest mean distinct scoring coverage, p95, and cap",
+        baseline,
+        trials,
+        selected,
+    })
+}
+
+fn measure_rescue(
+    engine: &mut Engine,
+    queries: &[Query],
+    config: &crate::ranking::SearchConfig,
+    baseline: Option<&[DevelopmentResult]>,
+) -> Result<(RescueTrial, Vec<DevelopmentResult>)> {
+    let mut measurements = Measurements::default();
+    let mut per_query = Vec::new();
+    let mut rescue_counts = Vec::new();
+    let mut union_counts = Vec::new();
+    let mut budget_hits = 0;
+    let mut lost = 0;
+    let mut changed = 0;
+    for (i, query) in queries.iter().enumerate() {
+        let start = Instant::now();
+        let result = engine.search(query, Strategy::Regional, config)?;
+        measurements.add(query, &result, milliseconds(start))?;
+        let ranked = result
+            .hits
+            .iter()
+            .map(|hit| hit.source.id.as_str())
+            .collect::<Vec<_>>();
+        let recall = quality(query, &ranked, &result)
+            .recall_at_100
+            .expect("positive judgments");
+        if let Some(original) = baseline {
+            lost += usize::from(recall < original[i].recall);
+            changed += usize::from(result.candidates != original[i].candidates);
+        } else {
+            per_query.push(DevelopmentResult {
+                recall,
+                candidates: result.candidates,
+            });
+        }
+        rescue_counts.push(result.work.global_rescue_chunks_scored.ok_or_else(|| {
+            anyhow::anyhow!("global rescue coverage unavailable for {}", query.id)
+        })?);
+        union_counts.push(
+            result
+                .work
+                .regional_or_rescue_chunks_scored
+                .ok_or_else(|| {
+                    anyhow::anyhow!("distinct scoring coverage unavailable for {}", query.id)
+                })?,
+        );
+        budget_hits += usize::from(result.work.global_rescue_budget_hit.unwrap_or(false));
+    }
+    let corpus = engine.manifest.chunks;
+    Ok((
+        RescueTrial {
+            max_scored: config.rescue_max_scored,
+            metrics: measurements.finish(),
+            global_rescue: super::ScoredPassages::summarize(rescue_counts, corpus),
+            regional_or_rescue: super::ScoredPassages::summarize(union_counts, corpus),
+            budget_hits,
+            queries_losing_recall: lost,
+            queries_with_changed_candidates: changed,
+        },
+        per_query,
+    ))
+}
+
+#[derive(Serialize)]
 pub struct Diagnosis {
     pub queries: usize,
     regional: Metrics,

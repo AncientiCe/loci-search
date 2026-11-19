@@ -13,7 +13,7 @@ use std::{
 };
 
 mod recall;
-pub use recall::{diagnose_recall, tune_regional_rerank};
+pub use recall::{diagnose_recall, tune_bounded_rescue, tune_regional_rerank};
 
 const STRATEGIES: [Strategy; 3] = [Strategy::Bm25, Strategy::Global, Strategy::Regional];
 
@@ -52,6 +52,8 @@ pub struct Report {
     global_rescue_scoring: Option<ScoredPassages>,
     #[serde(skip_serializing_if = "Option::is_none")]
     regional_or_rescue_scoring: Option<ScoredPassages>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    global_rescue_budget_hits: Option<usize>,
     exact_reference: Vec<Reference>,
 }
 
@@ -130,6 +132,7 @@ struct Sample {
     comparisons: usize,
     chunks_scored: usize,
     rescue_chunks_scored: Option<usize>,
+    rescue_budget_hit: Option<bool>,
     regional_or_rescue_chunks_scored: Option<usize>,
     routing_comparisons: usize,
     rerank_comparisons: usize,
@@ -174,6 +177,17 @@ pub struct FrozenComparison {
 }
 
 impl FrozenComparison {
+    pub fn with_bounded_rescue(mut self, cap: usize) -> Result<Self> {
+        let plan = self
+            .settings
+            .iter_mut()
+            .find(|plan| plan.strategy == Strategy::Regional)
+            .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
+        plan.config.rescue_max_scored = Some(cap);
+        plan.config.validate()?;
+        Ok(self)
+    }
+
     fn validate_plans(&self) -> Result<()> {
         let strategies = self
             .settings
@@ -557,6 +571,7 @@ fn evaluate_with(
                     comparisons: result.work.vector_comparisons,
                     chunks_scored: result.work.regional_chunks_scored,
                     rescue_chunks_scored: result.work.global_rescue_chunks_scored,
+                    rescue_budget_hit: result.work.global_rescue_budget_hit,
                     regional_or_rescue_chunks_scored: result.work.regional_or_rescue_chunks_scored,
                     routing_comparisons: result.work.routing_comparisons,
                     rerank_comparisons: result.work.rerank_vector_comparisons,
@@ -662,6 +677,12 @@ fn evaluate_with(
         .map(|sample| sample.rescue_chunks_scored)
         .collect::<Option<Vec<_>>>()
         .map(scoring);
+    let global_rescue_budget_hits = regional_samples
+        .iter()
+        .map(|sample| sample.rescue_budget_hit)
+        .try_fold(0, |total, reached| {
+            reached.map(|hit| total + usize::from(hit))
+        });
     let regional_or_rescue_scoring = regional_samples
         .iter()
         .map(|sample| sample.regional_or_rescue_chunks_scored)
@@ -704,6 +725,7 @@ fn evaluate_with(
         results,
         regional_scoring,
         global_rescue_scoring,
+        global_rescue_budget_hits,
         regional_or_rescue_scoring,
         exact_reference,
     })

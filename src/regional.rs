@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod wand;
+
 // FTS5 truncates longer tokens. Use SQLite for rescue when that can affect matching.
 const FTS5_TOKEN_BYTES: usize = 32768;
 const UNVISITED: usize = usize::MAX;
@@ -26,6 +28,7 @@ struct Posting {
 struct TermPostings {
     documents: Vec<Posting>,
     by_region: HashMap<usize, Vec<u32>>,
+    max_rescue_impact: f64,
 }
 
 pub(crate) struct RegionalIndex {
@@ -38,6 +41,7 @@ pub(crate) struct RegionalIndex {
 pub(crate) struct LexicalRescue {
     pub ranked: Vec<usize>,
     pub scores: Option<RescueScores>,
+    pub budget_hit: bool,
 }
 
 #[derive(Default)]
@@ -62,6 +66,14 @@ impl RegionalIndex {
         }
         let mut postings = HashMap::<String, TermPostings>::new();
         let mut fts5_compatible = true;
+        let average = engine.manifest.average_length;
+        let rescue_norms = engine
+            .lengths
+            .iter()
+            .map(|&len| {
+                1.2 * (0.25 + 0.75 * len as f64 / if average == 0.0 { 1.0 } else { average })
+            })
+            .collect::<Vec<_>>();
         let mut stmt = engine
             .conn
             .prepare("SELECT rowid, text FROM artifacts ORDER BY rowid")?;
@@ -72,24 +84,20 @@ impl RegionalIndex {
             for (term, frequency) in frequencies(text) {
                 fts5_compatible &= term.len() <= FTS5_TOKEN_BYTES;
                 let posting = postings.entry(term).or_default();
+                let frequency = u32::try_from(frequency)?;
+                posting.max_rescue_impact = posting
+                    .max_rescue_impact
+                    .max(rescue_impact(frequency, rescue_norms[id]));
                 let offset = u32::try_from(posting.documents.len())?;
                 posting.documents.push(Posting {
                     id: u32::try_from(id)?,
-                    frequency: u32::try_from(frequency)?,
+                    frequency,
                 });
                 for &region in &addresses[id] {
                     posting.by_region.entry(region).or_default().push(offset);
                 }
             }
         }
-        let average = engine.manifest.average_length;
-        let rescue_norms = engine
-            .lengths
-            .iter()
-            .map(|&len| {
-                1.2 * (0.25 + 0.75 * len as f64 / if average == 0.0 { 1.0 } else { average })
-            })
-            .collect();
         let regional_norms = engine
             .lengths
             .iter()
@@ -108,38 +116,56 @@ impl RegionalIndex {
         engine: &Engine,
         terms: &BTreeSet<String>,
         limit: usize,
+        max_scored: Option<usize>,
     ) -> Result<LexicalRescue> {
         if terms.is_empty() || limit == 0 {
             return Ok(LexicalRescue {
                 ranked: Vec::new(),
                 scores: Some(RescueScores::default()),
+                budget_hit: false,
             });
         }
         if !self.fts5_compatible || terms.iter().any(|term| term.len() > FTS5_TOKEN_BYTES) {
+            anyhow::ensure!(
+                max_scored.is_none(),
+                "bounded rescue requires the in-memory lexical index"
+            );
             return Ok(LexicalRescue {
                 ranked: engine.lexical(terms, limit)?,
                 scores: None,
+                budget_hit: false,
             });
+        }
+        let query_terms = terms
+            .iter()
+            .filter_map(|term| {
+                let posting = self.postings.get(term)?;
+                let df = posting.documents.len() as f64;
+                let idf = ((self.rescue_norms.len() as f64 - df + 0.5) / (df + 0.5)).ln();
+                Some((posting, if idf <= 0.0 { 1e-6 } else { idf }))
+            })
+            .collect::<Vec<_>>();
+        if let Some(budget) = max_scored {
+            return Ok(wand::rescue(
+                &query_terms,
+                &self.rescue_norms,
+                limit,
+                budget,
+            ));
         }
         let mut scores = vec![0.0; self.rescue_norms.len()];
         // Reproduce SQLite's OR-of-single-terms BM25 formula, in query term order.
-        for term in terms {
-            let Some(postings) = self.postings.get(term) else {
-                continue;
-            };
-            let df = postings.documents.len() as f64;
-            let idf = ((scores.len() as f64 - df + 0.5) / (df + 0.5)).ln();
-            let idf = if idf <= 0.0 { 1e-6 } else { idf };
+        for (postings, idf) in query_terms {
             for posting in &postings.documents {
                 let id = posting.id as usize;
-                let tf = f64::from(posting.frequency);
-                scores[id] += idf * ((tf * 2.2) / (tf + self.rescue_norms[id]));
+                scores[id] += idf * rescue_impact(posting.frequency, self.rescue_norms[id]);
             }
         }
         let (ranked, count) = top_lexical(&scores, limit);
         Ok(LexicalRescue {
             ranked,
             scores: Some(RescueScores { scores, count }),
+            budget_hit: false,
         })
     }
 
@@ -175,6 +201,11 @@ impl RegionalIndex {
             })
             .sum()
     }
+}
+
+fn rescue_impact(frequency: u32, norm: f64) -> f64 {
+    let frequency = f64::from(frequency);
+    (frequency * 2.2) / (frequency + norm)
 }
 
 #[derive(Default)]
@@ -393,11 +424,48 @@ mod tests {
             let tokens = terms(query).collect::<BTreeSet<_>>();
             let all_matches = engine.lexical(&tokens, 128)?;
             for limit in [1, 40, 128] {
-                let rescue = engine.regional_index().rescue(&engine, &tokens, limit)?;
+                let rescue = engine
+                    .regional_index()
+                    .rescue(&engine, &tokens, limit, None)?;
                 assert_eq!(rescue.ranked, all_matches[..all_matches.len().min(limit)]);
                 assert_eq!(rescue.scores.unwrap().count, all_matches.len());
+                let exact = engine
+                    .regional_index()
+                    .rescue(&engine, &tokens, limit, Some(128))?;
+                assert_eq!(exact.ranked, rescue.ranked);
+                assert!(!exact.budget_hit);
+                let capped = engine
+                    .regional_index()
+                    .rescue(&engine, &tokens, 1, Some(4))?;
+                assert!(capped.scores.unwrap().count <= 4);
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_rescue_skips_subthreshold_passages_and_detects_a_binding_cap() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let db = directory.path().join("bounded.sqlite");
+        let (embedding, mut corpus, _) = fixture::generate(128)?;
+        corpus.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+        for (id, passage) in corpus.iter_mut().enumerate() {
+            passage.text = if id == 0 { "common distinctive" } else { "common" }.into();
+            passage.end = passage.text.len() as u64;
+        }
+        index::ingest(&db, corpus, embedding, 16)?;
+        let mut engine = Engine::open(&db)?;
+        engine.prepare_regional()?;
+        let selective = terms("common distinctive").collect::<BTreeSet<_>>();
+        let result = engine.regional_index().rescue(&engine, &selective, 1, Some(1))?;
+        assert_eq!(result.ranked, engine.lexical(&selective, 1)?);
+        assert_eq!(result.scores.unwrap().count, 1);
+        assert!(!result.budget_hit);
+
+        let common = terms("common").collect::<BTreeSet<_>>();
+        let capped = engine.regional_index().rescue(&engine, &common, 1, Some(1))?;
+        assert_eq!(capped.scores.unwrap().count, 1);
+        assert!(capped.budget_hit);
         Ok(())
     }
 }

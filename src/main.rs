@@ -28,6 +28,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Tune bounded global lexical rescue on development queries only.
+    RescueDev {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        dev: PathBuf,
+        #[arg(long)]
+        frozen_report: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Audit candidate and final ranks on development queries against frozen Elasticsearch.
     RecallDev {
         #[arg(long)]
@@ -94,6 +105,9 @@ enum Command {
         /// Use an explicit regional reranker weight file.
         #[arg(long)]
         regional_rerank: Option<PathBuf>,
+        /// Cap the number of passages scored by global lexical rescue.
+        #[arg(long)]
+        rescue_max_scored: Option<usize>,
         #[command(flatten)]
         settings: Settings,
     },
@@ -130,6 +144,9 @@ enum Command {
         /// Override only the regional reranker in a frozen comparison.
         #[arg(long, requires = "frozen_report")]
         regional_rerank: Option<PathBuf>,
+        /// Change only the regional lexical rescue scoring cap in a frozen comparison.
+        #[arg(long, requires = "frozen_report")]
+        rescue_max_scored: Option<usize>,
         /// Loopback URL for a prepared single-shard Elasticsearch index.
         #[arg(long, requires_all = ["db", "elastic_index"], conflicts_with = "fixture")]
         elastic_url: Option<String>,
@@ -171,6 +188,7 @@ impl From<Settings> for SearchConfig {
             max_chunks: settings.max_chunks,
             max_postings: settings.max_postings,
             rescue: settings.rescue,
+            rescue_max_scored: None,
             routing_ms: settings.routing_ms,
             regional_rerank: None,
         }
@@ -179,6 +197,18 @@ impl From<Settings> for SearchConfig {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::RescueDev {
+            db,
+            dev,
+            frozen_report,
+            out,
+        } => {
+            let mut engine = Engine::open(&db)?;
+            let development = jsonl::<Query>(&dev)?;
+            let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            let tuning = bench::tune_bounded_rescue(&mut engine, &development, &frozen)?;
+            write_json(&out, &tuning)?;
+        }
         Command::RecallDev {
             db,
             dev,
@@ -248,6 +278,7 @@ fn main() -> Result<()> {
             strategy,
             explain,
             regional_rerank,
+            rescue_max_scored,
             settings,
         } => {
             let query = json::<Query>(&query)?;
@@ -258,6 +289,13 @@ fn main() -> Result<()> {
                     "--regional-rerank requires regional search"
                 );
                 config.regional_rerank = Some(json(&path)?);
+            }
+            if rescue_max_scored.is_some() {
+                ensure!(
+                    strategy == Strategy::Regional,
+                    "--rescue-max-scored requires regional search"
+                );
+                config.rescue_max_scored = rescue_max_scored;
             }
             let result = Engine::open(&db)?.search(&query, strategy, &config)?;
             if explain {
@@ -285,6 +323,7 @@ fn main() -> Result<()> {
             head_to_head,
             frozen_report,
             regional_rerank,
+            rescue_max_scored,
             elastic_url,
             elastic_index,
             settings,
@@ -329,6 +368,9 @@ fn main() -> Result<()> {
                     let mut frozen = json::<bench::FrozenComparison>(&path)?;
                     if let Some(weights) = regional_rerank {
                         frozen = frozen.with_regional_rerank(json::<RegionalRerank>(&weights)?)?;
+                    }
+                    if let Some(cap) = rescue_max_scored {
+                        frozen = frozen.with_bounded_rescue(cap)?;
                     }
                     bench::evaluate_frozen(&mut engine, &queries, &run, &frozen, &client, traces)?
                 } else {

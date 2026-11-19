@@ -43,6 +43,8 @@ The latency columns summarize all recorded warm sequential queries. The [machine
 | HotpotQA 1M, MaxScore rescue | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 21.24 ms | 32.78 ms |
 | HotpotQA 1M, int8 scan | 1,000,000 | 320 × 3 | Loci regional | 86.25% | 24.32 ms | 34.17 ms |
 | HotpotQA 1M, int8 scan | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 22.72 ms | 33.32 ms |
+| HotpotQA 1M, HNSW candidates | 1,000,000 | 320 × 3 | Loci regional | 89.53% | 33.03 ms | 47.29 ms |
+| HotpotQA 1M, HNSW candidates | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 25.57 ms | 37.33 ms |
 
 ## Loci preparation timings
 
@@ -166,3 +168,15 @@ Leaf 1,024 with larger budgets (the 24,000 row is a rerun of the earlier profile
 Leaf 1,024 at 36,000 matches the coarse index at 48,000 (90.60%) slightly faster, and returns diminish beyond it. Neither topology reaches the 91.60% Elasticsearch development recall below 96,000 scanned passages.
 
 Seeding more leaf entries into routing (leaf 1,024, 24,000 chunks) did not recover the misses: Recall@100 was 89.80% with 2 entries and 90.00% with 8, 24, or 64, with p95 between 34.97 ms and 50.20 ms across single-pass runs. The remaining misses lie in leaves whose centroids score low for the query even when the passage itself is among its nearest neighbors, so region probing alone does not reach them cheaply.
+
+## HotpotQA 1M global HNSW candidates
+
+`loci graph-build` built a batched HNSW graph over all 1,000,000 vectors in 369 seconds on 16 threads and saved it as a 140 MB file next to the index. Regional search then merges the graph's nearest passages into its dense list before candidate selection.
+
+| Development setting | Recall@100 | Graph mean | Query mean | Query p95 |
+| --- | ---: | ---: | ---: | ---: |
+| no graph | 88.40% | — | 28.96 ms | 42.00 ms |
+| 100 graph candidates | 91.20% | 3.53 ms | 33.07 ms | 46.72 ms |
+| 200 graph candidates | 91.20% | 3.78 ms | 35.05 ms | 46.61 ms |
+
+The held-out run froze 100 candidates. Loci regional reached 89.53% Recall@100 and 0.8005 nDCG@10 against 90.00% and 0.7930 for Elasticsearch. The paired 95% interval for the Recall@100 difference was −1.88 to +0.94 points and for nDCG@10 −0.0116 to +0.0262. Loci p95 was 47.29 ms against 37.33 ms for Elasticsearch in the same run.

@@ -57,6 +57,35 @@ These results use all 57,638 passages, three measured passes over the 648 test q
 
 Regional minus Elasticsearch was −0.0066 nDCG@10 (95% paired bootstrap interval −0.0114 to −0.0019) and −0.0286 Recall@100 (−0.0408 to −0.0178). Regional search averaged 20,220 candidate vector comparisons per query, versus 2,541 for the in-process global hybrid.
 
+### Profile and rerun with frozen settings
+
+```sh
+cargo run --locked --release -- profile --db runs/fiqa/loci.sqlite --queries runs/fiqa/dev.jsonl --frozen-report runs/fiqa/evaluation/report.json --out runs/fiqa/profile-after.json
+cargo run --locked --release -- bench --db runs/fiqa/loci.sqlite --queries runs/fiqa/test.jsonl --frozen-report runs/fiqa/evaluation/report.json --elastic-url http://127.0.0.1:19200 --elastic-index loci-fiqa --out runs/fiqa/evaluation-optimized
+```
+
+The profile on the 500 development queries put 77% of mean regional latency in global lexical rescue and regional postings. The optimized engine builds an in-memory cache from the open SQLite snapshot, shares canonical posting payloads across regions, and scores lexical rescue from the same BM25 inputs as FTS5. It selects only the top candidates, reconstructs paths for returned hits, and looks up reranker term coverage in the cache. SQLite indexes remain compatible. Regional startup now includes cache preparation, which took approximately 2.4 seconds and reserved 138 MiB for posting payloads and length factors on FiQA, plus lookup overhead.
+
+| Development profile | Original mean | Optimized mean |
+| --- | ---: | ---: |
+| Global lexical rescue | 44.26 ms | 0.46 ms |
+| Regional postings | 27.36 ms | 1.12 ms |
+| Vectors and memberships | 12.35 ms | 6.40 ms |
+| Rerank and result assembly | 7.01 ms | 1.00 ms |
+
+The profiler recorded identical ranked IDs, rescue ranks, and result paths across all 500 development queries. The frozen rerun reuses each strategy's selected settings and checks the original index statistics and evaluation dimensions.
+
+On the same 648 held-out queries, across three warm sequential passes:
+
+| Strategy | nDCG@10 | Recall@100 | Original p95 | Rerun p95 |
+| --- | ---: | ---: | ---: | ---: |
+| SQLite BM25 | 0.2348 | 0.5187 | 81.75 ms | 77.32 ms |
+| Loci global hybrid | 0.2859 | 0.6305 | 88.24 ms | 85.06 ms |
+| Loci regional hybrid | 0.2844 | 0.6212 | 153.97 ms | 13.49 ms |
+| Frozen Elasticsearch hybrid | 0.2910 | 0.6498 | 20.98 ms | 21.34 ms |
+
+All 7,776 paired traces matched on ranked IDs, scores, candidate IDs, and retrieval paths. Loci regional cut p95 by 91% from the original run and finished 37% below Elasticsearch p95 in the rerun. Elasticsearch retained its relevance lead.
+
 ## Use an existing corpus
 
 ```sh

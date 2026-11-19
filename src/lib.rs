@@ -3,7 +3,9 @@ pub mod elastic;
 pub mod fixture;
 mod graph;
 pub mod index;
+pub mod profile;
 pub mod ranking;
+mod regional;
 mod topology;
 
 use anyhow::{Result, ensure};

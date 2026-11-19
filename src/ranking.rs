@@ -3,17 +3,15 @@ use crate::{
     elastic::Lists,
     graph::Neighbor,
     index::{Engine, Source, frequencies},
-    terms,
+    profile::{Phases, Timer},
+    regional, terms,
     topology::Route,
 };
 use anyhow::{Result, ensure};
 use clap::ValueEnum;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    time::{Duration, Instant},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -26,7 +24,7 @@ pub enum Strategy {
     Elasticsearch,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SearchConfig {
     pub limit: usize,
     pub depth: usize,
@@ -132,7 +130,25 @@ pub(crate) fn search(
     strategy: Strategy,
     config: &SearchConfig,
 ) -> Result<SearchResult> {
-    search_with(engine, query, vector, strategy, config, None)
+    search_with(engine, query, vector, strategy, config, None, None)
+}
+
+pub(crate) fn profile_regional(
+    engine: &Engine,
+    query: &Query,
+    vector: &[f32],
+    config: &SearchConfig,
+    phases: &mut Phases,
+) -> Result<SearchResult> {
+    search_with(
+        engine,
+        query,
+        vector,
+        Strategy::Regional,
+        config,
+        None,
+        Some(phases),
+    )
 }
 
 pub(crate) fn search_external(
@@ -149,6 +165,7 @@ pub(crate) fn search_external(
         Strategy::Elasticsearch,
         config,
         Some(lists),
+        None,
     )
 }
 
@@ -159,15 +176,21 @@ fn search_with(
     strategy: Strategy,
     config: &SearchConfig,
     external: Option<Lists>,
+    mut profile: Option<&mut Phases>,
 ) -> Result<SearchResult> {
     let query_terms = terms(&query.text).collect::<BTreeSet<_>>();
     let mut work = Work::default();
     let mut expanded = Vec::new();
-    let mut routes = HashMap::<usize, Vec<usize>>::new();
+    let mut routes = regional::Routes::default();
     let mut stop_reason = "complete";
+    let timer = Timer::start(&profile, "rescue");
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
-        Strategy::Regional => engine.lexical(&query_terms, config.rescue)?,
+        Strategy::Regional => {
+            engine
+                .regional_index()
+                .rescue(engine, &query_terms, config.rescue)?
+        }
         Strategy::Exact => Vec::new(),
         Strategy::Elasticsearch => external
             .as_ref()
@@ -175,6 +198,7 @@ fn search_with(
             .lexical
             .clone(),
     };
+    timer.finish(&mut profile);
     work.global_lexical_returned = global_lexical.len();
     let mut weights = BTreeMap::new();
     let hybrid = matches!(
@@ -228,89 +252,15 @@ fn search_with(
                 .collect()
         }
         Strategy::Regional => {
-            let start = Instant::now();
-            let deadline = if config.routing_ms == 0 {
-                None
-            } else {
-                start.checked_add(Duration::from_millis(config.routing_ms))
-            };
-            let expired = || deadline.is_some_and(|limit| Instant::now() >= limit);
-            let mut router = engine
-                .topology
-                .router(vector, &engine.vectors, &engine.ids, deadline);
-            let mut scored = HashMap::<usize, f32>::new();
-            let mut local = HashMap::<usize, f64>::new();
-            let mut visited_terms = BTreeSet::new();
-            let mut postings = engine.conn.prepare_cached(
-                "SELECT artifact, frequency FROM postings WHERE region=? AND term=?",
-            )?;
-            stop_reason = 'routing: loop {
-                if expired() {
-                    break "routing_time";
-                }
-                if expanded.len() >= config.max_regions {
-                    break "region_budget";
-                }
-                let Some((region, route)) = router.expand(&engine.topology, vector) else {
-                    break "frontier_exhausted";
-                };
-                let route_id = expanded.len();
-                expanded.push(route);
-                for (offset, &id) in engine.topology.members[region].iter().enumerate() {
-                    if offset % 128 == 0 && expired() {
-                        break 'routing "routing_time";
-                    }
-                    if !scored.contains_key(&id) && scored.len() >= config.max_chunks {
-                        continue;
-                    }
-                    scored
-                        .entry(id)
-                        .or_insert_with(|| cosine(vector, &engine.vectors[id]));
-                    routes.entry(id).or_default().push(route_id);
-                }
-                for (term_number, (term, &idf)) in weights.iter().enumerate() {
-                    let mut rows = postings.query(params![region, term])?;
-                    loop {
-                        if work.regional_postings_read % 128 == 0 && expired() {
-                            break 'routing "routing_time";
-                        }
-                        if work.regional_postings_read >= config.max_postings {
-                            break 'routing "postings_budget";
-                        }
-                        let Some(row) = rows.next()? else {
-                            break;
-                        };
-                        work.regional_postings_read += 1;
-                        let id: usize = row.get(0)?;
-                        if scored.contains_key(&id) && visited_terms.insert((id, term_number)) {
-                            let tf = row.get::<_, usize>(1)? as f64;
-                            let average = engine.manifest.average_length.max(1.0);
-                            let length = engine.lengths[id] as f64 / average;
-                            *local.entry(id).or_default() +=
-                                idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * length));
-                        }
-                    }
-                }
-                if scored.len() >= config.max_chunks {
-                    break "chunk_budget";
-                }
-            };
-            work.regions_expanded = expanded.len();
-            work.routing_comparisons = router.comparisons;
-            work.regional_chunks_scored = scored.len();
-            work.vector_comparisons = scored.len();
-            let mut lexical = local.into_iter().collect::<Vec<_>>();
-            lexical.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-            for (rank, (id, _)) in lexical.into_iter().take(config.depth).enumerate() {
+            let selection =
+                regional::select(engine, vector, config, &weights, &mut work, &mut profile);
+            stop_reason = selection.stop_reason;
+            expanded = selection.expanded;
+            routes = selection.routes;
+            for (rank, id) in selection.lexical.into_iter().enumerate() {
                 candidates.entry(id).or_default().lexical = Some(rank + 1);
             }
-            let mut nearest = scored
-                .into_iter()
-                .map(|(id, similarity)| Neighbor { id, similarity })
-                .collect::<Vec<_>>();
-            nearest.sort_unstable_by(|a, b| b.cmp(a));
-            nearest.truncate(config.depth);
-            nearest
+            selection.nearest
         }
     };
     for (rank, hit) in nearest.iter().enumerate() {
@@ -345,22 +295,28 @@ fn search_with(
         .map(|(id, _)| engine.ids[*id].clone())
         .collect();
     let total_weight = weights.values().sum::<f64>().max(f64::EPSILON);
+    let timer = Timer::start(&profile, "rerank");
     let mut reranked = Vec::with_capacity(fused.len());
     for (id, candidate) in fused {
         let (score, source) = if hybrid {
-            let source = engine.source(id)?;
-            let document = frequencies(&source.text);
-            let coverage = weights
-                .iter()
-                .filter(|(term, _)| document.contains_key(*term))
-                .map(|(_, weight)| weight)
-                .sum::<f64>()
-                / total_weight;
+            let (matched_weight, source) = if strategy == Strategy::Regional {
+                (engine.regional_index().coverage(id, &weights), None)
+            } else {
+                let source = engine.source(id)?;
+                let document = frequencies(&source.text);
+                let matched_weight = weights
+                    .iter()
+                    .filter(|(term, _)| document.contains_key(*term))
+                    .map(|(_, weight)| weight)
+                    .sum::<f64>();
+                (matched_weight, Some(source))
+            };
+            let coverage = matched_weight / total_weight;
             let similarity = f64::from(cosine(vector, &engine.vectors[id]));
             work.rerank_vector_comparisons += 1;
             (
                 0.65 * coverage + 0.25 * similarity + 0.10 * candidate.fusion() * 30.0,
-                Some(source),
+                source,
             )
         } else {
             (candidate.fusion(), None)
@@ -385,14 +341,10 @@ fn search_with(
             lexical_rank: candidate.lexical,
             vector_rank: candidate.vector,
             global_lexical_rank,
-            routes: routes
-                .get(&id)
-                .into_iter()
-                .flatten()
-                .map(|&route| expanded[route].clone())
-                .collect(),
+            routes: routes.for_hit(engine, id, &expanded),
         });
     }
+    timer.finish(&mut profile);
     Ok(SearchResult {
         strategy,
         hits,

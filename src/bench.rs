@@ -5,7 +5,7 @@ use crate::{
     topology::{MEMBERSHIP_LIMIT, MEMBERSHIP_MARGIN},
 };
 use anyhow::{Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write,
@@ -24,6 +24,8 @@ pub struct Report {
     ingest_ms: Option<f64>,
     open_ms: f64,
     graph_build_ms: f64,
+    regional_prepare_ms: f64,
+    regional_posting_payload_bytes: usize,
     graph_degree: usize,
     graph_construction_width: usize,
     membership_limit: usize,
@@ -32,6 +34,7 @@ pub struct Report {
     repeats: usize,
     config: SearchConfig,
     settings: Vec<Plan>,
+    settings_frozen: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     elasticsearch: Option<elastic::Info>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,12 +116,36 @@ pub struct Run {
     pub open_ms: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Plan {
     strategy: Strategy,
     config: SearchConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     elastic: Option<elastic::Options>,
+}
+
+#[derive(Deserialize)]
+pub struct FrozenComparison {
+    index: Manifest,
+    queries: usize,
+    repeats: usize,
+    config: SearchConfig,
+    settings: Vec<Plan>,
+    elasticsearch: elastic::Info,
+}
+
+impl FrozenComparison {
+    pub fn regional_config(&self, engine: &Engine) -> Result<&SearchConfig> {
+        ensure!(
+            self.index == engine.manifest,
+            "frozen index manifest differs from the current index"
+        );
+        self.settings
+            .iter()
+            .find(|plan| plan.strategy == Strategy::Regional)
+            .map(|plan| &plan.config)
+            .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))
+    }
 }
 
 impl Plan {
@@ -185,9 +212,27 @@ pub fn evaluate(
     evaluate_with(engine, queries, config, run, None, traces)
 }
 
+#[derive(Clone, Copy)]
 pub struct Development<'a> {
     pub queries: &'a [Query],
     pub elasticsearch: &'a elastic::Client,
+}
+
+enum Comparison<'a> {
+    Tune(Development<'a>),
+    Frozen {
+        report: &'a FrozenComparison,
+        client: &'a elastic::Client,
+    },
+}
+
+impl Comparison<'_> {
+    fn client(&self) -> &elastic::Client {
+        match self {
+            Self::Tune(dev) => dev.elasticsearch,
+            Self::Frozen { client, .. } => client,
+        }
+    }
 }
 
 pub fn evaluate_comparison(
@@ -198,7 +243,32 @@ pub fn evaluate_comparison(
     development: Development<'_>,
     traces: impl Write,
 ) -> Result<Report> {
-    evaluate_with(engine, queries, config, run, Some(development), traces)
+    evaluate_with(
+        engine,
+        queries,
+        config,
+        run,
+        Some(Comparison::Tune(development)),
+        traces,
+    )
+}
+
+pub fn evaluate_frozen(
+    engine: &mut Engine,
+    queries: &[Query],
+    run: &Run,
+    report: &FrozenComparison,
+    client: &elastic::Client,
+    traces: impl Write,
+) -> Result<Report> {
+    evaluate_with(
+        engine,
+        queries,
+        &report.config,
+        run,
+        Some(Comparison::Frozen { report, client }),
+        traces,
+    )
 }
 
 fn validate_queries(engine: &Engine, queries: &[Query]) -> Result<()> {
@@ -238,7 +308,7 @@ fn evaluate_with(
     queries: &[Query],
     config: &SearchConfig,
     run: &Run,
-    development: Option<Development<'_>>,
+    comparison: Option<Comparison<'_>>,
     mut traces: impl Write,
 ) -> Result<Report> {
     config.validate()?;
@@ -250,7 +320,7 @@ fn evaluate_with(
     let mut settings = STRATEGIES
         .map(|strategy| Plan::native(strategy, config))
         .to_vec();
-    let client = development.as_ref().map(|dev| dev.elasticsearch);
+    let client = comparison.as_ref().map(Comparison::client);
     let elasticsearch = client.map(elastic::Client::info).transpose()?;
     if let Some(info) = &elasticsearch {
         ensure!(
@@ -258,7 +328,40 @@ fn evaluate_with(
             "Elasticsearch must have one active primary shard and the same document count as Loci"
         );
     }
-    if let Some(dev) = &development {
+    let settings_frozen = matches!(&comparison, Some(Comparison::Frozen { .. }));
+    if let Some(Comparison::Frozen { report, .. }) = &comparison {
+        ensure!(
+            report.index == engine.manifest
+                && report.queries == queries.len()
+                && report.repeats == run.repeats,
+            "frozen comparison requires the original Loci manifest, query count, and repeat count"
+        );
+        ensure!(
+            elasticsearch.as_ref() == Some(&report.elasticsearch),
+            "Elasticsearch version, index or primary-store statistics differ from the frozen report"
+        );
+        let expected = STRATEGIES.into_iter().chain([Strategy::Elasticsearch]);
+        ensure!(
+            report
+                .settings
+                .iter()
+                .map(|plan| plan.strategy)
+                .eq(expected),
+            "frozen report must contain the four original strategies"
+        );
+        for plan in &report.settings {
+            plan.config.validate()?;
+            ensure!(
+                plan.config.limit == config.limit
+                    && plan.config.depth == config.depth
+                    && plan.elastic.is_some() == (plan.strategy == Strategy::Elasticsearch),
+                "invalid frozen strategy configuration"
+            );
+        }
+        settings.clone_from(&report.settings);
+        eprintln!("Using the original strategy and Elasticsearch settings");
+    }
+    if let Some(Comparison::Tune(dev)) = &comparison {
         ensure!(
             config.depth <= 8_664,
             "Elasticsearch tuning requires depth <= 8664"
@@ -277,8 +380,12 @@ fn evaluate_with(
     eprintln!("Building the in-process HNSW control");
     engine.prepare_global();
     let graph_build_ms = milliseconds(started);
-    let tuning = if let Some(dev) = development {
-        let (plans, tuning) = tune(engine, config, dev)?;
+    let started = Instant::now();
+    engine.prepare_regional()?;
+    let regional_prepare_ms = milliseconds(started);
+    let regional_posting_payload_bytes = engine.regional_index().payload_bytes();
+    let tuning = if let Some(Comparison::Tune(dev)) = &comparison {
+        let (plans, tuning) = tune(engine, config, *dev)?;
         settings.truncate(1);
         settings.extend(plans);
         Some(tuning)
@@ -391,7 +498,7 @@ fn evaluate_with(
             approximate_comparisons,
         });
     }
-    let regional_minus_elasticsearch = tuning.as_ref().and_then(|_| {
+    let regional_minus_elasticsearch = elasticsearch.as_ref().and_then(|_| {
         let first_round = |strategy| {
             let index = settings.iter().position(|plan| plan.strategy == strategy)?;
             Some(&samples.get(&(index, None))?[..queries.len()])
@@ -422,6 +529,8 @@ fn evaluate_with(
         ingest_ms: run.ingest_ms,
         open_ms: run.open_ms,
         graph_build_ms,
+        regional_prepare_ms,
+        regional_posting_payload_bytes,
         graph_degree: graph::DEGREE,
         graph_construction_width: graph::BUILD_WIDTH,
         membership_limit: MEMBERSHIP_LIMIT,
@@ -430,6 +539,7 @@ fn evaluate_with(
         repeats: run.repeats,
         config: config.clone(),
         settings,
+        settings_frozen,
         elasticsearch,
         tuning,
         regional_minus_elasticsearch,

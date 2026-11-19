@@ -9,13 +9,13 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use ureq::{Agent, http::Uri};
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Options {
     pub analyzer: Analyzer,
     pub num_candidates: usize,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Analyzer {
     Standard,
@@ -28,7 +28,7 @@ pub struct Client {
     index: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct Info {
     pub version: String,
     pub index: String,

@@ -5,6 +5,7 @@ use loci_search::{
     bench::{self, Run},
     elastic, fixture,
     index::{Engine, ingest},
+    profile,
     ranking::{SearchConfig, Strategy},
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -27,6 +28,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Profile regional query phases with the settings from a prior comparison.
+    Profile {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        queries: PathBuf,
+        #[arg(long)]
+        frozen_report: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Generate deterministic passages, embeddings, and relevance judgments.
     Fixture {
         #[arg(long)]
@@ -77,10 +89,13 @@ enum Command {
         #[arg(long, default_value_t = 12)]
         exact_queries: usize,
         /// Separate development-query JSONL used to tune the comparison.
-        #[arg(long, requires = "elastic_url")]
+        #[arg(long, requires = "elastic_url", conflicts_with = "frozen_report")]
         dev: Option<PathBuf>,
+        /// Reuse all settings and verify the original index statistics without tuning.
+        #[arg(long, requires = "elastic_url")]
+        frozen_report: Option<PathBuf>,
         /// Loopback URL for a prepared single-shard Elasticsearch index.
-        #[arg(long, requires_all = ["db", "dev", "elastic_index"], conflicts_with = "fixture")]
+        #[arg(long, requires_all = ["db", "elastic_index"], conflicts_with = "fixture")]
         elastic_url: Option<String>,
         #[arg(long, requires = "elastic_url")]
         elastic_index: Option<String>,
@@ -127,6 +142,19 @@ impl From<Settings> for SearchConfig {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Profile {
+            db,
+            queries,
+            frozen_report,
+            out,
+        } => {
+            let mut engine = Engine::open(&db)?;
+            let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            let config = frozen.regional_config(&engine)?;
+            let queries = jsonl::<Query>(&queries)?;
+            let report = profile::regional(&mut engine, &queries, config)?;
+            write_json(&out, &report)?;
+        }
         Command::Fixture { out, chunks } => {
             let (embedding, passages, queries) = fixture::generate(chunks)?;
             output_dir(&out)?;
@@ -176,6 +204,7 @@ fn main() -> Result<()> {
             repeats,
             exact_queries,
             dev,
+            frozen_report,
             elastic_url,
             elastic_index,
             settings,
@@ -216,19 +245,24 @@ fn main() -> Result<()> {
             let report = if let Some(url) = elastic_url {
                 let client =
                     elastic::Client::new(&url, &elastic_index.context("provide --elastic-index")?)?;
-                let dev = jsonl::<Query>(&dev.context("provide --dev")?)?;
-                let development = bench::Development {
-                    queries: &dev,
-                    elasticsearch: &client,
-                };
-                bench::evaluate_comparison(
-                    &mut engine,
-                    &queries,
-                    &config,
-                    &run,
-                    development,
-                    traces,
-                )?
+                if let Some(path) = frozen_report {
+                    let frozen = json::<bench::FrozenComparison>(&path)?;
+                    bench::evaluate_frozen(&mut engine, &queries, &run, &frozen, &client, traces)?
+                } else {
+                    let dev = jsonl::<Query>(&dev.context("provide --dev or --frozen-report")?)?;
+                    let development = bench::Development {
+                        queries: &dev,
+                        elasticsearch: &client,
+                    };
+                    bench::evaluate_comparison(
+                        &mut engine,
+                        &queries,
+                        &config,
+                        &run,
+                        development,
+                        traces,
+                    )?
+                }
             } else {
                 bench::evaluate(&mut engine, &queries, &config, &run, traces)?
             };

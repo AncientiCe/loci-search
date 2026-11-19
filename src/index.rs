@@ -3,6 +3,7 @@ use crate::{
     graph::{Graph, Neighbor},
     normalize,
     ranking::{self, SearchConfig, SearchResult, Strategy},
+    regional::RegionalIndex,
     terms,
     topology::{Region, Topology},
 };
@@ -38,7 +39,7 @@ CREATE TABLE IF NOT EXISTS postings (
 CREATE TABLE IF NOT EXISTS term_stats (term TEXT PRIMARY KEY, df INTEGER NOT NULL) WITHOUT ROWID;
 ";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Manifest {
     pub schema: u32,
     pub embedding: Embedding,
@@ -200,6 +201,7 @@ pub struct Engine {
     pub(crate) lengths: Vec<usize>,
     pub(crate) topology: Topology,
     graph: Option<Graph>,
+    regional: Option<RegionalIndex>,
 }
 
 impl Engine {
@@ -273,6 +275,7 @@ impl Engine {
             lengths,
             topology: Topology { regions, members },
             graph: None,
+            regional: None,
         })
     }
 
@@ -280,6 +283,17 @@ impl Engine {
         if self.graph.is_none() {
             self.graph = Some(Graph::build(&self.vectors));
         }
+    }
+
+    pub(crate) fn prepare_regional(&mut self) -> Result<()> {
+        if self.regional.is_none() {
+            self.regional = Some(RegionalIndex::load(self)?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn regional_index(&self) -> &RegionalIndex {
+        self.regional.as_ref().expect("prepared regional index")
     }
 
     pub fn search(
@@ -293,7 +307,22 @@ impl Engine {
         if strategy == Strategy::Global {
             self.prepare_global();
         }
+        if strategy == Strategy::Regional {
+            self.prepare_regional()?;
+        }
         ranking::search(self, query, &vector, strategy, config)
+    }
+
+    pub(crate) fn profile_regional(
+        &mut self,
+        query: &Query,
+        config: &SearchConfig,
+        phases: &mut crate::profile::Phases,
+    ) -> Result<SearchResult> {
+        config.validate()?;
+        let vector = self.query_vector(query)?;
+        self.prepare_regional()?;
+        ranking::profile_regional(self, query, &vector, config, phases)
     }
 
     pub(crate) fn query_vector(&self, query: &Query) -> Result<Vec<f32>> {

@@ -39,6 +39,8 @@ The latency columns summarize all recorded warm sequential queries. The [machine
 | NFCorpus harness synthetic smoke | 128 | 32 × 1 | Loci regional | 100.00% | 0.15 ms | 0.18 ms |
 | HotpotQA 1M, frozen FiQA transfer | 1,000,000 | 320 × 3 | Loci regional | 86.25% | 35.08 ms | 44.26 ms |
 | HotpotQA 1M, frozen FiQA transfer | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 20.64 ms | 30.38 ms |
+| HotpotQA 1M, MaxScore rescue | 1,000,000 | 320 × 3 | Loci regional | 86.25% | 27.65 ms | 39.07 ms |
+| HotpotQA 1M, MaxScore rescue | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 21.24 ms | 32.78 ms |
 
 ## Loci preparation timings
 
@@ -54,8 +56,9 @@ The latency columns summarize all recorded warm sequential queries. The [machine
 | NFCorpus, frozen FiQA transfer | — | 23.96 ms | 2226.12 ms | 181.84 ms |
 | NFCorpus harness synthetic smoke | 6.61 ms | 1.18 ms | 10.56 ms | 0.32 ms |
 | HotpotQA 1M, frozen FiQA transfer | — | 68256.07 ms | — | 20237.52 ms |
+| HotpotQA 1M, MaxScore rescue | — | 5782.56 ms | — | 21426.41 ms |
 
-An em dash denotes a timing absent from the recorded report. Fixtures and smoke runs use synthetic inputs. The HotpotQA head-to-head omitted the global control.
+An em dash denotes a timing absent from the recorded report. Fixtures and smoke runs use synthetic inputs. The HotpotQA head-to-head omitted the global control. The MaxScore run opened the index with a warm operating-system file cache.
 
 ## Recorded index builds
 
@@ -93,3 +96,15 @@ Measured over 500 development queries.
 | selected reranker validation | 13.72 ms | 21.92 ms |
 
 The machine-readable history contains the twelve timed regional reranker trials. Earlier analyzer and candidate sweeps recorded development quality and the selected configuration.
+
+## HotpotQA 1M global lexical rescue
+
+Measured over 250 development queries with frozen regional settings. WAND and MaxScore used a 256,000-passage cap, which no query reached. All three produced identical rankings, rescue ranks, and routes.
+
+| Rescue | Rescue mean | Rescue p95 | Query mean | Query p95 |
+| --- | ---: | ---: | ---: | ---: |
+| dense scan | 11.91 ms | 15.52 ms | 35.95 ms | 43.27 ms |
+| WAND | 40.40 ms | 110.35 ms | 66.20 ms | 139.23 ms |
+| MaxScore | 4.62 ms | 10.91 ms | 28.56 ms | 36.84 ms |
+
+On the 320 held-out queries, MaxScore scored a mean of 494 rescue passages instead of 894,306. All 960 regional traces matched the original run on rankings, candidates, and scores.

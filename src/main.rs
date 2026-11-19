@@ -67,6 +67,9 @@ enum Command {
         frozen_report: PathBuf,
         #[arg(long)]
         out: PathBuf,
+        /// Cap the number of passages scored by global lexical rescue.
+        #[arg(long)]
+        rescue_max_scored: Option<usize>,
     },
     /// Generate deterministic passages, embeddings, and relevance judgments.
     Fixture {
@@ -236,9 +239,13 @@ fn main() -> Result<()> {
             queries,
             frozen_report,
             out,
+            rescue_max_scored,
         } => {
             let mut engine = Engine::open(&db)?;
-            let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            let mut frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            if let Some(cap) = rescue_max_scored {
+                frozen = frozen.with_bounded_rescue(cap)?;
+            }
             let config = frozen.regional_config(&engine)?;
             let queries = jsonl::<Query>(&queries)?;
             let report = profile::regional(&mut engine, &queries, config)?;

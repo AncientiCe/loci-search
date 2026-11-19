@@ -129,3 +129,18 @@ Measured over 250 development queries with MaxScore rescue. The int8 scan scores
 The held-out run uses 400, the smallest depth with identical development rankings. Single-pass p95 varies by about 2 ms between runs.
 
 On the 320 held-out queries with re-score depth 400, Loci regional p95 fell from 39.07 ms to 34.17 ms against 33.32 ms for Elasticsearch in the same interleaved run. Recall@100 stayed at 86.25%, and all 960 regional traces matched the MaxScore run on rankings and candidates.
+
+## HotpotQA 1M recall diagnosis
+
+On 250 development queries, Elasticsearch returned 18 judged passages in its top 100 that never entered the Loci regional candidate pool; the reverse happened twice. Of the 53 judged passages missing from regional candidates, about 28 rank in the exact global dense top 200 and 9 are the single nearest passage, while most rank beyond 40 in BM25. They are routing misses: the 1M topology has 365 regions with 8,192-passage leaves, and the 24,000-passage budget expands about 2.7 of them.
+
+Raising the budget recovers recall, with roughly linear cost (MaxScore rescue, int8 re-score 400, regions and postings scaled with chunks):
+
+| Chunk budget | Recall@100 | Query mean | Query p95 |
+| ---: | ---: | ---: | ---: |
+| 24,000 | 88.40% | 28.96 ms | 42.00 ms |
+| 48,000 | 90.60% | 38.09 ms | 49.26 ms |
+| 96,000 | 91.40% | 69.94 ms | 88.14 ms |
+| 192,000 | 91.60% | 178.27 ms | 233.39 ms |
+
+Frozen Elasticsearch reached 91.60% development Recall@100 in the audit.

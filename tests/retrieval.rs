@@ -1,7 +1,7 @@
 use loci_search::{
     fixture,
     index::{Engine, ingest},
-    ranking::{SearchConfig, Strategy},
+    ranking::{RegionalRerank, SearchConfig, SearchResult, Strategy},
 };
 
 #[test]
@@ -67,5 +67,48 @@ fn rejects_query_vectors_from_a_different_embedding_model() -> anyhow::Result<()
         .search(query, Strategy::Regional, &SearchConfig::default())
         .unwrap_err();
     assert!(error.to_string().contains("embedding manifest differs"));
+    Ok(())
+}
+
+#[test]
+fn regional_reranker_preserves_candidates_and_global_control_scores() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("rerank.sqlite");
+    let (embedding, passages, queries) = fixture::generate(128)?;
+    ingest(&db, passages, embedding, 16)?;
+    let mut engine = Engine::open(&db)?;
+    let query = &queries[1];
+    let config = SearchConfig::default();
+    let tuned = SearchConfig {
+        regional_rerank: Some(RegionalRerank {
+            coverage: 0.08,
+            cosine: 0.92,
+            fusion: 0.0,
+        }),
+        ..config.clone()
+    };
+    let scores = |result: SearchResult| {
+        result
+            .hits
+            .into_iter()
+            .map(|hit| (hit.source.id, hit.score.to_bits()))
+            .collect::<Vec<_>>()
+    };
+    let original = engine.search(query, Strategy::Regional, &config)?;
+    let regional = engine.search(query, Strategy::Regional, &tuned)?;
+    assert_eq!(original.candidates, regional.candidates);
+    assert_eq!(
+        original.work.vector_comparisons,
+        regional.work.vector_comparisons
+    );
+    assert_eq!(
+        original.work.regional_postings_read,
+        regional.work.regional_postings_read
+    );
+    assert_ne!(scores(original), scores(regional));
+    assert_eq!(
+        scores(engine.search(query, Strategy::Global, &config)?),
+        scores(engine.search(query, Strategy::Global, &tuned)?),
+    );
     Ok(())
 }

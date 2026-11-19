@@ -34,6 +34,44 @@ pub struct SearchConfig {
     pub max_postings: usize,
     pub rescue: usize,
     pub routing_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regional_rerank: Option<RegionalRerank>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegionalRerank {
+    pub coverage: f64,
+    pub cosine: f64,
+    pub fusion: f64,
+}
+
+impl Default for RegionalRerank {
+    fn default() -> Self {
+        Self {
+            coverage: 0.65,
+            cosine: 0.25,
+            fusion: 0.10,
+        }
+    }
+}
+
+impl RegionalRerank {
+    fn validate(self) -> Result<()> {
+        let weights = [self.coverage, self.cosine, self.fusion];
+        ensure!(
+            weights
+                .into_iter()
+                .all(|weight| (0.0..=1.0).contains(&weight))
+                && (weights.into_iter().sum::<f64>() - 1.0).abs() <= 1e-9,
+            "regional reranker weights must be in [0, 1] and sum to 1"
+        );
+        Ok(())
+    }
+
+    fn score(self, coverage: f64, cosine: f64, fusion: f64) -> f64 {
+        self.coverage * coverage + self.cosine * cosine + self.fusion * fusion * 30.0
+    }
 }
 
 impl Default for SearchConfig {
@@ -47,6 +85,7 @@ impl Default for SearchConfig {
             max_postings: 60_000,
             rescue: 40,
             routing_ms: 0,
+            regional_rerank: None,
         }
     }
 }
@@ -69,6 +108,9 @@ impl SearchConfig {
             self.rescue <= self.depth,
             "rescue depth exceeds candidate depth"
         );
+        if let Some(weights) = self.regional_rerank {
+            weights.validate()?;
+        }
         Ok(())
     }
 }
@@ -295,12 +337,22 @@ fn search_with(
         .map(|(id, _)| engine.ids[*id].clone())
         .collect();
     let total_weight = weights.values().sum::<f64>().max(f64::EPSILON);
+    let rerank = if strategy == Strategy::Regional {
+        config.regional_rerank.unwrap_or_default()
+    } else {
+        RegionalRerank::default()
+    };
     let timer = Timer::start(&profile, "rerank");
     let mut reranked = Vec::with_capacity(fused.len());
     for (id, candidate) in fused {
         let (score, source) = if hybrid {
             let (matched_weight, source) = if strategy == Strategy::Regional {
-                (engine.regional_index().coverage(id, &weights), None)
+                let matched_weight = if rerank.coverage > 0.0 {
+                    engine.regional_index().coverage(id, &weights)
+                } else {
+                    0.0
+                };
+                (matched_weight, None)
             } else {
                 let source = engine.source(id)?;
                 let document = frequencies(&source.text);
@@ -315,7 +367,7 @@ fn search_with(
             let similarity = f64::from(cosine(vector, &engine.vectors[id]));
             work.rerank_vector_comparisons += 1;
             (
-                0.65 * coverage + 0.25 * similarity + 0.10 * candidate.fusion() * 30.0,
+                rerank.score(coverage, similarity, candidate.fusion()),
                 source,
             )
         } else {

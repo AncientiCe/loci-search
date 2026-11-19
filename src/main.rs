@@ -6,7 +6,7 @@ use loci_search::{
     elastic, fixture,
     index::{Engine, ingest},
     profile,
-    ranking::{SearchConfig, Strategy},
+    ranking::{RegionalRerank, SearchConfig, Strategy},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
@@ -28,6 +28,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Audit candidate and final ranks on development queries against frozen Elasticsearch.
+    RecallDev {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        dev: PathBuf,
+        #[arg(long)]
+        frozen_report: PathBuf,
+        #[arg(long)]
+        elastic_url: String,
+        #[arg(long)]
+        elastic_index: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Sweep regional reranker weights and write the selected weights here.
+        #[arg(long)]
+        tune_rerank: Option<PathBuf>,
+    },
     /// Profile regional query phases with the settings from a prior comparison.
     Profile {
         #[arg(long)]
@@ -67,6 +85,9 @@ enum Command {
         strategy: Strategy,
         #[arg(long)]
         explain: bool,
+        /// Use an explicit regional reranker weight file.
+        #[arg(long)]
+        regional_rerank: Option<PathBuf>,
         #[command(flatten)]
         settings: Settings,
     },
@@ -94,6 +115,9 @@ enum Command {
         /// Reuse all settings and verify the original index statistics without tuning.
         #[arg(long, requires = "elastic_url")]
         frozen_report: Option<PathBuf>,
+        /// Override only the regional reranker in a frozen comparison.
+        #[arg(long, requires = "frozen_report")]
+        regional_rerank: Option<PathBuf>,
         /// Loopback URL for a prepared single-shard Elasticsearch index.
         #[arg(long, requires_all = ["db", "elastic_index"], conflicts_with = "fixture")]
         elastic_url: Option<String>,
@@ -136,12 +160,35 @@ impl From<Settings> for SearchConfig {
             max_postings: settings.max_postings,
             rescue: settings.rescue,
             routing_ms: settings.routing_ms,
+            regional_rerank: None,
         }
     }
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::RecallDev {
+            db,
+            dev,
+            frozen_report,
+            elastic_url,
+            elastic_index,
+            out,
+            tune_rerank,
+        } => {
+            let mut engine = Engine::open(&db)?;
+            let queries = jsonl::<Query>(&dev)?;
+            let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            let client = elastic::Client::new(&elastic_url, &elastic_index)?;
+            if let Some(weights) = tune_rerank {
+                let tuning = bench::tune_regional_rerank(&mut engine, &queries, &frozen, &client)?;
+                write_json(&out, &tuning)?;
+                write_json(&weights, &tuning.selected)?;
+            } else {
+                let diagnosis = bench::diagnose_recall(&mut engine, &queries, &frozen, &client)?;
+                write_json(&out, &diagnosis)?;
+            }
+        }
         Command::Profile {
             db,
             queries,
@@ -179,10 +226,19 @@ fn main() -> Result<()> {
             query,
             strategy,
             explain,
+            regional_rerank,
             settings,
         } => {
             let query = json::<Query>(&query)?;
-            let result = Engine::open(&db)?.search(&query, strategy, &settings.into())?;
+            let mut config: SearchConfig = settings.into();
+            if let Some(path) = regional_rerank {
+                ensure!(
+                    strategy == Strategy::Regional,
+                    "--regional-rerank requires regional search"
+                );
+                config.regional_rerank = Some(json(&path)?);
+            }
+            let result = Engine::open(&db)?.search(&query, strategy, &config)?;
             if explain {
                 print_json(&result)?;
             } else {
@@ -205,6 +261,7 @@ fn main() -> Result<()> {
             exact_queries,
             dev,
             frozen_report,
+            regional_rerank,
             elastic_url,
             elastic_index,
             settings,
@@ -246,7 +303,10 @@ fn main() -> Result<()> {
                 let client =
                     elastic::Client::new(&url, &elastic_index.context("provide --elastic-index")?)?;
                 if let Some(path) = frozen_report {
-                    let frozen = json::<bench::FrozenComparison>(&path)?;
+                    let mut frozen = json::<bench::FrozenComparison>(&path)?;
+                    if let Some(weights) = regional_rerank {
+                        frozen = frozen.with_regional_rerank(json::<RegionalRerank>(&weights)?)?;
+                    }
                     bench::evaluate_frozen(&mut engine, &queries, &run, &frozen, &client, traces)?
                 } else {
                     let dev = jsonl::<Query>(&dev.context("provide --dev or --frozen-report")?)?;

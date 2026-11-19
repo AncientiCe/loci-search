@@ -1,7 +1,7 @@
 use crate::{
     Query, elastic, graph,
     index::{Engine, Manifest},
-    ranking::{SearchConfig, SearchResult, Strategy},
+    ranking::{RegionalRerank, SearchConfig, SearchResult, Strategy},
     topology::{MEMBERSHIP_LIMIT, MEMBERSHIP_MARGIN},
 };
 use anyhow::{Result, ensure};
@@ -11,6 +11,9 @@ use std::{
     io::Write,
     time::Instant,
 };
+
+mod recall;
+pub use recall::{diagnose_recall, tune_regional_rerank};
 
 const STRATEGIES: [Strategy; 3] = [Strategy::Bm25, Strategy::Global, Strategy::Regional];
 
@@ -135,6 +138,17 @@ pub struct FrozenComparison {
 }
 
 impl FrozenComparison {
+    pub fn with_regional_rerank(mut self, weights: RegionalRerank) -> Result<Self> {
+        let plan = self
+            .settings
+            .iter_mut()
+            .find(|plan| plan.strategy == Strategy::Regional)
+            .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
+        plan.config.regional_rerank = Some(weights);
+        plan.config.validate()?;
+        Ok(self)
+    }
+
     pub fn regional_config(&self, engine: &Engine) -> Result<&SearchConfig> {
         ensure!(
             self.index == engine.manifest,
@@ -359,7 +373,7 @@ fn evaluate_with(
             );
         }
         settings.clone_from(&report.settings);
-        eprintln!("Using the original strategy and Elasticsearch settings");
+        eprintln!("Using frozen comparison settings");
     }
     if let Some(Comparison::Tune(dev)) = &comparison {
         ensure!(

@@ -86,6 +86,30 @@ On the same 648 held-out queries, across three warm sequential passes:
 
 All 7,776 paired traces matched on ranked IDs, scores, candidate IDs, and retrieval paths. Loci regional cut p95 by 91% from the original run and finished 37% below Elasticsearch p95 in the rerun. Elasticsearch retained its relevance lead.
 
+### Recover recall at the reranker cutoff
+
+On the 500 development queries, candidate recall at 200 was 0.7711 for Loci regional and 0.7736 for frozen Elasticsearch. After reranking to 100, recall was 0.6141 and 0.6529. Of the 51 judged passages returned only by Elasticsearch at 100, 41 were already in Loci's candidate pool. The development sweep therefore kept the candidate pool, regional work limits, and lexical rescue fixed and changed only the regional reranker.
+
+The sweep tried 12 weight combinations. It selected highest development Recall@100 among trials that maintained the original regional nDCG@10 and stayed below frozen Elasticsearch p95, then checked the choice again with interleaved searches. The selected FiQA preset scores candidates with 92% cosine similarity and 8% term coverage. It recovered 40 of the 41 cutoff misses. Development Recall@100 rose to 0.7418 and development p95 was 13.72 ms versus 21.92 ms for frozen Elasticsearch in the validation pass.
+
+```sh
+cargo run --locked --release -- recall-dev --db runs/fiqa/loci.sqlite --dev runs/fiqa/dev.jsonl --frozen-report runs/fiqa/evaluation-optimized/report.json --elastic-url http://127.0.0.1:19200 --elastic-index loci-fiqa --out runs/fiqa/recall-dev-tuning.json --tune-rerank runs/fiqa/regional-rerank.json
+cargo run --locked --release -- bench --db runs/fiqa/loci.sqlite --queries runs/fiqa/test.jsonl --frozen-report runs/fiqa/evaluation-optimized/report.json --regional-rerank benchmarks/fiqa-regional-rerank.json --elastic-url http://127.0.0.1:19200 --elastic-index loci-fiqa --out runs/fiqa/evaluation-recall
+```
+
+Use `loci search --regional-rerank benchmarks/fiqa-regional-rerank.json` with a FiQA query and index to apply the preset outside the benchmark.
+
+On the same 648 held-out queries and three warm sequential passes, the reranker raised Loci regional Recall@100 by 11.52 percentage points. It finished 8.67 percentage points above frozen Elasticsearch, with p95 32% lower.
+
+| Strategy | Candidate recall@200 | nDCG@10 | Recall@100 | Warm p95 |
+| --- | ---: | ---: | ---: | ---: |
+| SQLite BM25 | 0.5867 | 0.2348 | 0.5187 | 82.85 ms |
+| Loci global hybrid | 0.7688 | 0.2859 | 0.6305 | 90.94 ms |
+| Loci regional, dev-selected reranker | 0.7681 | 0.4266 | 0.7364 | 14.33 ms |
+| Frozen Elasticsearch hybrid | 0.7777 | 0.2910 | 0.6498 | 21.21 ms |
+
+All 7,776 paired traces matched on candidate IDs and retrieval work. The Elasticsearch, SQLite BM25, and Loci global traces also matched on rankings and scores. The paired 95% bootstrap interval for the regional minus Elasticsearch Recall@100 difference was +6.79 to +10.64 percentage points.
+
 ## Use an existing corpus
 
 ```sh

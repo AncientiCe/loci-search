@@ -1,0 +1,71 @@
+use loci_search::{
+    fixture,
+    index::{Engine, ingest},
+    ranking::{SearchConfig, Strategy},
+};
+
+#[test]
+fn lexical_rescue_finds_the_misplaced_identifier_within_routing_budgets() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("test.sqlite");
+    let (embedding, passages, queries) = fixture::generate(512)?;
+    let manifest = ingest(&db, passages, embedding, 16)?;
+    assert_eq!(manifest.chunks, 512);
+    let mut engine = Engine::open(&db)?;
+    let config = SearchConfig {
+        limit: 10,
+        depth: 30,
+        max_regions: 2,
+        max_chunks: 3,
+        max_postings: 1,
+        rescue: 1,
+        ..SearchConfig::default()
+    };
+    let query = &queries[0];
+    let result = engine.search(query, Strategy::Regional, &config)?;
+    let expected = query.judgments.keys().next().unwrap();
+    assert_eq!(&result.hits[0].source.id, expected);
+    assert_eq!(result.hits[0].global_lexical_rank, Some(1));
+    assert!(result.lexical_rescue_only_candidates.contains(expected));
+    assert!(result.work.regions_expanded <= config.max_regions);
+    assert!(result.work.regional_chunks_scored <= config.max_chunks);
+    assert!(result.work.regional_postings_read <= config.max_postings);
+    Ok(())
+}
+
+#[test]
+fn repeat_ingest_keeps_one_chunk_and_open_readers_keep_their_snapshot() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("test.sqlite");
+    let (embedding, passages, queries) = fixture::generate(128)?;
+    ingest(&db, passages, embedding.clone(), 16)?;
+    let mut old = Engine::open(&db)?;
+    let config = SearchConfig::default();
+    let query = &queries[0];
+    let before = old.search(query, Strategy::Bm25, &config)?;
+    let (_, mut replacement, _) = fixture::generate(128)?;
+    replacement.remove(0);
+    ingest(&db, replacement, embedding, 16)?;
+    let prior = old.search(query, Strategy::Bm25, &config)?;
+    assert_eq!(prior.hits[0].source.id, before.hits[0].source.id);
+    let mut new = Engine::open(&db)?;
+    assert_eq!(new.manifest.chunks, 127);
+    assert!(new.search(query, Strategy::Bm25, &config)?.hits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn rejects_query_vectors_from_a_different_embedding_model() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("test.sqlite");
+    let (embedding, passages, mut queries) = fixture::generate(64)?;
+    ingest(&db, passages, embedding, 16)?;
+    let mut engine = Engine::open(&db)?;
+    let query = &mut queries[0];
+    query.embedding.model_revision.push_str("-different");
+    let error = engine
+        .search(query, Strategy::Regional, &SearchConfig::default())
+        .unwrap_err();
+    assert!(error.to_string().contains("embedding manifest differs"));
+    Ok(())
+}

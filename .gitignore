@@ -1,0 +1,6 @@
+/.impact/
+/target/
+/runs/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

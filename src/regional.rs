@@ -10,6 +10,7 @@ use anyhow::Result;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -42,6 +43,14 @@ pub(crate) struct RegionalIndex {
     rescue_norms: Vec<f64>,
     regional_norms: Vec<f64>,
     quantized: Quantized,
+    /// Corpus-sized buffers reused across queries; only touched entries are reset.
+    scratch: Mutex<Scratch>,
+}
+
+struct Scratch {
+    first_visit: Vec<usize>,
+    lexical: Vec<f64>,
+    seen_terms: Vec<u64>,
 }
 
 pub(crate) struct LexicalRescue {
@@ -50,15 +59,33 @@ pub(crate) struct LexicalRescue {
     pub budget_hit: bool,
 }
 
-#[derive(Default)]
 pub(crate) struct RescueScores {
-    scores: Vec<f64>,
+    scored: Scored,
     pub count: usize,
+}
+
+/// Passages the rescue scored: dense scores for the full scan, or the ascending
+/// ids MaxScore evaluated, which avoids a corpus-sized array per query.
+enum Scored {
+    Dense(Vec<f64>),
+    Sorted(Vec<u32>),
+}
+
+impl Default for RescueScores {
+    fn default() -> Self {
+        Self {
+            scored: Scored::Sorted(Vec::new()),
+            count: 0,
+        }
+    }
 }
 
 impl RescueScores {
     fn contains(&self, id: usize) -> bool {
-        self.scores.get(id).is_some_and(|&score| score > 0.0)
+        match &self.scored {
+            Scored::Dense(scores) => scores.get(id).is_some_and(|&score| score > 0.0),
+            Scored::Sorted(ids) => u32::try_from(id).is_ok_and(|id| ids.binary_search(&id).is_ok()),
+        }
     }
 }
 
@@ -115,6 +142,11 @@ impl RegionalIndex {
             rescue_norms,
             regional_norms,
             quantized: Quantized::build(&engine.vectors),
+            scratch: Mutex::new(Scratch {
+                first_visit: vec![UNVISITED; engine.ids.len()],
+                lexical: vec![0.0; engine.ids.len()],
+                seen_terms: vec![0; engine.ids.len()],
+            }),
         })
     }
 
@@ -171,7 +203,10 @@ impl RegionalIndex {
         let (ranked, count) = top_lexical(&scores, limit);
         Ok(LexicalRescue {
             ranked,
-            scores: Some(RescueScores { scores, count }),
+            scores: Some(RescueScores {
+                scored: Scored::Dense(scores),
+                count,
+            }),
             budget_hit: false,
         })
     }
@@ -221,7 +256,8 @@ fn rescue_impact(frequency: u32, norm: f64) -> f64 {
 
 #[derive(Default)]
 pub(crate) struct Routes {
-    first_visit: Vec<usize>,
+    /// (passage, first visit index) for every scanned passage, sorted by passage.
+    first_visit: Vec<(usize, usize)>,
     visits: Vec<Visit>,
 }
 
@@ -232,10 +268,10 @@ struct Visit {
 
 impl Routes {
     pub fn for_hit(&self, engine: &Engine, id: usize, expanded: &[Route]) -> Vec<Route> {
-        let first = self.first_visit.get(id).copied().unwrap_or(UNVISITED);
-        if first == UNVISITED {
+        let Ok(position) = self.first_visit.binary_search_by_key(&id, |&(id, _)| id) else {
             return Vec::new();
-        }
+        };
+        let first = self.first_visit[position].1;
         self.visits
             .iter()
             .zip(expanded)
@@ -272,15 +308,17 @@ pub(crate) fn select(
         .iter()
         .map(|(term, &idf)| (index.postings.get(term), idf))
         .collect::<Vec<_>>();
-    let mut routes = Routes {
-        first_visit: vec![UNVISITED; engine.ids.len()],
-        visits: Vec::new(),
-    };
+    let mut scratch = index.scratch.lock().expect("regional scratch");
+    let Scratch {
+        first_visit,
+        lexical,
+        seen_terms,
+    } = &mut *scratch;
+    let mut routes = Routes::default();
     let mut expanded = Vec::new();
     let mut nearest = Vec::new();
     let mut dense_only = 0;
-    let mut lexical = vec![0.0; engine.ids.len()];
-    let mut seen_terms = vec![0_u64; engine.ids.len()];
+    let mut lexical_ids = Vec::new();
     let mut extra_terms = HashSet::new();
     let deadline = (config.routing_ms > 0)
         .then(|| Instant::now().checked_add(Duration::from_millis(config.routing_ms)))
@@ -321,8 +359,8 @@ pub(crate) fn select(
                 break 'routing "routing_time";
             }
             visit.scanned = offset + 1;
-            if routes.first_visit[id] == UNVISITED && nearest.len() < config.max_chunks {
-                routes.first_visit[id] = visit_number;
+            if first_visit[id] == UNVISITED && nearest.len() < config.max_chunks {
+                first_visit[id] = visit_number;
                 if rescue_scores.is_some_and(|rescue| !rescue.contains(id)) {
                     dense_only += 1;
                 }
@@ -354,7 +392,7 @@ pub(crate) fn select(
                 work.regional_postings_read += 1;
                 let doc = &posting.expect("matched posting").documents[offset as usize];
                 let id = doc.id as usize;
-                if routes.first_visit[id] == UNVISITED {
+                if first_visit[id] == UNVISITED {
                     continue;
                 }
                 let first_term = if number < u64::BITS as usize {
@@ -366,6 +404,9 @@ pub(crate) fn select(
                     extra_terms.insert((id, number))
                 };
                 if first_term {
+                    if lexical[id] == 0.0 {
+                        lexical_ids.push(id);
+                    }
                     let tf = f64::from(doc.frequency);
                     lexical[id] += idf * tf * 2.2 / (tf + index.regional_norms[id]);
                 }
@@ -381,6 +422,12 @@ pub(crate) fn select(
     work.regional_chunks_scored = nearest.len();
     work.vector_comparisons = nearest.len();
     work.regional_or_rescue_chunks_scored = rescue_scores.map(|rescue| rescue.count + dense_only);
+    // Every scanned passage is in `nearest` until the cuts below; record and reset.
+    routes.first_visit = nearest
+        .iter()
+        .map(|hit| (hit.id, std::mem::replace(&mut first_visit[hit.id], UNVISITED)))
+        .collect();
+    routes.first_visit.sort_unstable();
     if let Some(rescore) = config.regional_rescore {
         let timer = Timer::start(profile, "vectors");
         retain_top(&mut nearest, rescore, |a, b| b.cmp(a));
@@ -391,7 +438,19 @@ pub(crate) fn select(
         timer.finish(profile);
     }
     let timer = Timer::start(profile, "selection");
-    let (lexical, _) = top_lexical(&lexical, config.depth);
+    let mut matches = lexical_ids
+        .iter()
+        .map(|&id| (id, lexical[id]))
+        .collect::<Vec<_>>();
+    for &id in &lexical_ids {
+        lexical[id] = 0.0;
+        seen_terms[id] = 0;
+    }
+    drop(scratch);
+    retain_top(&mut matches, config.depth, |a, b| {
+        b.1.total_cmp(&a.1).then(a.0.cmp(&b.0))
+    });
+    let lexical = matches.into_iter().map(|(id, _)| id).collect();
     retain_top(&mut nearest, config.depth, |a, b| b.cmp(a));
     timer.finish(profile);
     Selection {

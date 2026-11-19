@@ -5,7 +5,7 @@
 //! those lists are never iterated, only probed with galloping seeks for
 //! candidates produced by the essential lists. Final scores are summed in query
 //! term order so they match the dense scorer bit for bit.
-use super::{LexicalRescue, Posting, RescueScores, TermPostings, rescue_impact};
+use super::{LexicalRescue, Posting, RescueScores, Scored, TermPostings, rescue_impact};
 use std::{
     cmp::{Ordering, Reverse},
     collections::BinaryHeap,
@@ -88,7 +88,7 @@ pub(super) fn rescue(
     let mut essential = 0;
     let mut contributions = vec![0.0; cursors.len()];
     let mut best = BinaryHeap::<Reverse<Ranked>>::new();
-    let mut scores = vec![0.0; norms.len()];
+    let mut scored = Vec::new();
     let mut count = 0;
 
     let budget_hit = 'candidates: loop {
@@ -141,7 +141,8 @@ pub(super) fn rescue(
         // Sum in query term order, as the dense scorer does.
         let score = contributions.iter().sum::<f64>();
         count += 1;
-        scores[id] = score;
+        // Candidates arrive in ascending id order, so `scored` stays sorted.
+        scored.push(candidate);
         let ranked = Ranked { id, score };
         if best.len() < limit {
             best.push(Reverse(ranked));
@@ -156,7 +157,10 @@ pub(super) fn rescue(
         .collect();
     LexicalRescue {
         ranked,
-        scores: Some(RescueScores { scores, count }),
+        scores: Some(RescueScores {
+            scored: Scored::Sorted(scored),
+            count,
+        }),
         budget_hit,
     }
 }

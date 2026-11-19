@@ -110,3 +110,17 @@ Measured over 250 development queries with frozen regional settings. WAND and Ma
 On the 320 held-out queries, MaxScore scored a mean of 494 rescue passages instead of 894,306. All 960 regional traces matched the original run on rankings, candidates, and scores.
 
 A `-C target-cpu=native` build (AVX2 and FMA) cut the vectors and memberships phase from 12.98 ms to 10.80 ms mean but query p95 only from 36.84 ms to 35.98 ms, with identical signatures. The phase reads about 98 MB of scattered float32 vectors per query and is memory-bound, so the default build stays portable.
+
+## HotpotQA 1M int8 regional scan
+
+Measured over 250 development queries with MaxScore rescue. The int8 scan scores passages against one byte per dimension plus a per-vector scale, then re-scores the best candidates with exact float32 cosine. The int8 copy takes 1.03 GB.
+
+| Vector scan | Vectors mean | Query mean | Query p95 | Recall@100 | Rankings identical to exact |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| exact float32 | 12.98 ms | 28.56 ms | 36.84 ms | 88.40% | — |
+| int8, re-score 200 | 8.74 ms | 23.72 ms | 33.08 ms | 88.40% | 248 of 250 |
+| int8, re-score 400 | 8.99 ms | 24.11 ms | 35.33 ms | 88.40% | 250 of 250 |
+| int8, re-score 800 | 8.97 ms | 23.68 ms | 32.34 ms | 88.40% | 250 of 250 |
+| int8, re-score 1600 | 11.14 ms | 30.21 ms | 41.35 ms | 88.40% | 250 of 250 |
+
+The held-out run uses 400, the smallest depth with identical development rankings. Single-pass p95 varies by about 2 ms between runs.

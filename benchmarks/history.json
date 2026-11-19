@@ -3269,6 +3269,306 @@
           "p95_ms": 35.9764
         }
       ]
+    },
+    {
+      "phase": "hotpotqa-1m maxscore rescue, int8 scan, re-score 200",
+      "source": "runs/hotpotqa-1m/profile-int8-200.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 36,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 200,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 20606.3561,
+      "posting_payload_bytes": 1034628000,
+      "quantized_vector_bytes": 1028000000,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 4.114426800000001,
+          "p50_ms": 3.091,
+          "p95_ms": 10.2294
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.1547507999999999,
+          "p50_ms": 0.1494,
+          "p95_ms": 0.2005
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 8.739559599999998,
+          "p50_ms": 8.6409,
+          "p95_ms": 9.783800000000001
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 5.670771999999999,
+          "p50_ms": 5.716899999999999,
+          "p95_ms": 8.318200000000001
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.7407087999999994,
+          "p50_ms": 0.7012,
+          "p95_ms": 0.9958
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 1.9131663999999997,
+          "p50_ms": 1.8462,
+          "p95_ms": 2.87
+        },
+        {
+          "phase": "other",
+          "mean_ms": 2.3886128,
+          "p50_ms": 2.2942999999999962,
+          "p95_ms": 3.133300000000002
+        },
+        {
+          "phase": "total",
+          "mean_ms": 23.721997200000004,
+          "p50_ms": 22.7285,
+          "p95_ms": 33.0833
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m maxscore rescue, int8 scan, re-score 400",
+      "source": "runs/hotpotqa-1m/profile-int8-400.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 36,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 22257.0587,
+      "posting_payload_bytes": 1034628000,
+      "quantized_vector_bytes": 1028000000,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 4.218744399999999,
+          "p50_ms": 3.2174,
+          "p95_ms": 10.5458
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.154166,
+          "p50_ms": 0.14200000000000004,
+          "p95_ms": 0.24419999999999997
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 8.994699600000006,
+          "p50_ms": 8.6838,
+          "p95_ms": 11.5315
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 5.638669600000001,
+          "p50_ms": 5.5784,
+          "p95_ms": 8.484
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.7634640000000001,
+          "p50_ms": 0.6912,
+          "p95_ms": 1.1647999999999998
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 1.9336372,
+          "p50_ms": 1.794,
+          "p95_ms": 3.0159000000000002
+        },
+        {
+          "phase": "other",
+          "mean_ms": 2.4081752000000005,
+          "p50_ms": 2.339800000000004,
+          "p95_ms": 3.234500000000004
+        },
+        {
+          "phase": "total",
+          "mean_ms": 24.111555999999997,
+          "p50_ms": 22.7594,
+          "p95_ms": 35.3338
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m maxscore rescue, int8 scan, re-score 800",
+      "source": "runs/hotpotqa-1m/profile-int8-800.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 36,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 800,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 22108.234800000002,
+      "posting_payload_bytes": 1034628000,
+      "quantized_vector_bytes": 1028000000,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 4.113898799999999,
+          "p50_ms": 3.0299,
+          "p95_ms": 9.943900000000001
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.14390399999999992,
+          "p50_ms": 0.1398,
+          "p95_ms": 0.1812
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 8.967139999999999,
+          "p50_ms": 8.8841,
+          "p95_ms": 9.9102
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 5.5209996000000015,
+          "p50_ms": 5.475200000000001,
+          "p95_ms": 8.0135
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.7278467999999999,
+          "p50_ms": 0.6891999999999999,
+          "p95_ms": 0.9564
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 1.8638067999999985,
+          "p50_ms": 1.777,
+          "p95_ms": 2.771
+        },
+        {
+          "phase": "other",
+          "mean_ms": 2.3385440000000006,
+          "p50_ms": 2.281099999999995,
+          "p95_ms": 3.0787999999999975
+        },
+        {
+          "phase": "total",
+          "mean_ms": 23.67614,
+          "p50_ms": 22.5945,
+          "p95_ms": 32.3394
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m maxscore rescue, int8 scan, re-score 1600",
+      "source": "runs/hotpotqa-1m/profile-int8-1600.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 36,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 1600,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 22652.8538,
+      "posting_payload_bytes": 1034628000,
+      "quantized_vector_bytes": 1028000000,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 4.948500800000003,
+          "p50_ms": 3.811,
+          "p95_ms": 12.419599999999999
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.1848395999999999,
+          "p50_ms": 0.1811,
+          "p95_ms": 0.2275
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 11.135048800000002,
+          "p50_ms": 10.961300000000001,
+          "p95_ms": 13.0027
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 7.309845199999996,
+          "p50_ms": 7.3177,
+          "p95_ms": 10.2957
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.9362503999999998,
+          "p50_ms": 0.8920999999999999,
+          "p95_ms": 1.3055
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 2.1785668,
+          "p50_ms": 2.097,
+          "p95_ms": 3.3124000000000002
+        },
+        {
+          "phase": "other",
+          "mean_ms": 3.5189879999999993,
+          "p50_ms": 3.4207,
+          "p95_ms": 4.6541
+        },
+        {
+          "phase": "total",
+          "mean_ms": 30.212039600000015,
+          "p50_ms": 28.788600000000002,
+          "p95_ms": 41.3468
+        }
+      ]
     }
   ],
   "development": {

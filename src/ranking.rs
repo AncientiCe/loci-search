@@ -38,6 +38,9 @@ pub struct SearchConfig {
     /// Scan regions with int8 vectors and re-score this many best candidates exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regional_rescore: Option<usize>,
+    /// Best-scoring leaf regions seeded into routing (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_entries: Option<usize>,
     pub routing_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regional_rerank: Option<RegionalRerank>,
@@ -91,6 +94,7 @@ impl Default for SearchConfig {
             rescue: 40,
             rescue_max_scored: None,
             regional_rescore: None,
+            routing_entries: None,
             routing_ms: 0,
             regional_rerank: None,
         }
@@ -124,6 +128,10 @@ impl SearchConfig {
             self.regional_rescore
                 .is_none_or(|rescore| rescore >= self.depth),
             "regional re-scoring must keep at least the candidate depth"
+        );
+        ensure!(
+            self.routing_entries.is_none_or(|entries| entries > 0),
+            "routing needs at least one entry region"
         );
         if let Some(weights) = self.regional_rerank {
             weights.validate()?;

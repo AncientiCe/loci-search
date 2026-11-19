@@ -21,6 +21,8 @@ use quantized::Quantized;
 // FTS5 truncates longer tokens. Use SQLite for rescue when that can affect matching.
 const FTS5_TOKEN_BYTES: usize = 32768;
 const UNVISITED: usize = usize::MAX;
+/// Leaf entries seeded into routing when the configuration does not set them.
+const DEFAULT_ROUTING_ENTRIES: usize = 2;
 
 struct Posting {
     id: u32,
@@ -287,7 +289,13 @@ pub(crate) fn select(
     let timer = Timer::start(profile, "routing");
     let mut router = engine
         .topology
-        .router(vector, &engine.vectors, &engine.ids, deadline);
+        .router(
+            vector,
+            &engine.vectors,
+            &engine.ids,
+            deadline,
+            config.routing_entries.unwrap_or(DEFAULT_ROUTING_ENTRIES),
+        );
     timer.finish(profile);
     let stop_reason = 'routing: loop {
         if expired() {

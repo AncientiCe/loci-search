@@ -26,6 +26,8 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once per process; boxing the larger variants would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Tune bounded global lexical rescue on development queries only.
@@ -73,6 +75,9 @@ enum Command {
         /// Scan regions with int8 vectors and re-score this many candidates exactly.
         #[arg(long)]
         regional_rescore: Option<usize>,
+        /// Seed routing with this many best-scoring leaf regions (default 2).
+        #[arg(long)]
+        routing_entries: Option<usize>,
     },
     /// Generate deterministic passages, embeddings, and relevance judgments.
     Fixture {
@@ -117,6 +122,9 @@ enum Command {
         /// Scan regions with int8 vectors and re-score this many candidates exactly.
         #[arg(long)]
         regional_rescore: Option<usize>,
+        /// Seed routing with this many best-scoring leaf regions (default 2).
+        #[arg(long)]
+        routing_entries: Option<usize>,
         #[command(flatten)]
         settings: Settings,
     },
@@ -159,6 +167,9 @@ enum Command {
         /// Change only regional int8 scanning and its exact re-score depth in a frozen comparison.
         #[arg(long, requires = "frozen_report")]
         regional_rescore: Option<usize>,
+        /// Change only the number of routing entry regions in a frozen comparison.
+        #[arg(long, requires = "frozen_report")]
+        routing_entries: Option<usize>,
         /// Loopback URL for a prepared single-shard Elasticsearch index.
         #[arg(long, requires_all = ["db", "elastic_index"], conflicts_with = "fixture")]
         elastic_url: Option<String>,
@@ -202,6 +213,7 @@ impl From<Settings> for SearchConfig {
             rescue: settings.rescue,
             rescue_max_scored: None,
             regional_rescore: None,
+            routing_entries: None,
             routing_ms: settings.routing_ms,
             regional_rerank: None,
         }
@@ -251,6 +263,7 @@ fn main() -> Result<()> {
             out,
             rescue_max_scored,
             regional_rescore,
+            routing_entries,
         } => {
             let mut engine = Engine::open(&db)?;
             let mut frozen = json::<bench::FrozenComparison>(&frozen_report)?;
@@ -259,6 +272,9 @@ fn main() -> Result<()> {
             }
             if let Some(rescore) = regional_rescore {
                 frozen = frozen.with_regional_rescore(rescore)?;
+            }
+            if let Some(entries) = routing_entries {
+                frozen = frozen.with_routing_entries(entries)?;
             }
             let config = frozen.regional_config(&engine)?;
             let queries = jsonl::<Query>(&queries)?;
@@ -301,6 +317,7 @@ fn main() -> Result<()> {
             regional_rerank,
             rescue_max_scored,
             regional_rescore,
+            routing_entries,
             settings,
         } => {
             let query = json::<Query>(&query)?;
@@ -325,6 +342,13 @@ fn main() -> Result<()> {
                     "--regional-rescore requires regional search"
                 );
                 config.regional_rescore = regional_rescore;
+            }
+            if routing_entries.is_some() {
+                ensure!(
+                    strategy == Strategy::Regional,
+                    "--routing-entries requires regional search"
+                );
+                config.routing_entries = routing_entries;
             }
             let result = Engine::open(&db)?.search(&query, strategy, &config)?;
             if explain {
@@ -354,6 +378,7 @@ fn main() -> Result<()> {
             regional_rerank,
             rescue_max_scored,
             regional_rescore,
+            routing_entries,
             elastic_url,
             elastic_index,
             settings,
@@ -404,6 +429,9 @@ fn main() -> Result<()> {
                     }
                     if let Some(rescore) = regional_rescore {
                         frozen = frozen.with_regional_rescore(rescore)?;
+                    }
+                    if let Some(entries) = routing_entries {
+                        frozen = frozen.with_routing_entries(entries)?;
                     }
                     bench::evaluate_frozen(&mut engine, &queries, &run, &frozen, &client, traces)?
                 } else {

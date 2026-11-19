@@ -112,6 +112,7 @@ impl Topology {
         vectors: &[Vec<f32>],
         ids: &[String],
         deadline: Option<Instant>,
+        seeds: usize,
     ) -> Router {
         let mut entries = BinaryHeap::new();
         for (id, node) in self
@@ -130,7 +131,9 @@ impl Topology {
         let seed_comparisons = 2 * entries.len();
         let mut pending = BinaryHeap::new();
         let mut routes = Vec::new();
-        for item in entries.into_sorted_vec().into_iter().rev().take(2) {
+        // Every leaf was scored above, so seeding more entries is an IVF-style probe
+        // list: the best leaves are reachable directly instead of only via graph walks.
+        for item in entries.into_sorted_vec().into_iter().rev().take(seeds) {
             let landmark = self.regions[item.id].landmark;
             let route = Route {
                 entry_landmark: ids[landmark].clone(),

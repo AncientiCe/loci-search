@@ -210,6 +210,17 @@ impl FrozenComparison {
         Ok(self)
     }
 
+    pub fn with_graph_candidates(mut self, count: usize) -> Result<Self> {
+        let plan = self
+            .settings
+            .iter_mut()
+            .find(|plan| plan.strategy == Strategy::Regional)
+            .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
+        plan.config.graph_candidates = Some(count);
+        plan.config.validate()?;
+        Ok(self)
+    }
+
     fn validate_plans(&self) -> Result<()> {
         let strategies = self
             .settings

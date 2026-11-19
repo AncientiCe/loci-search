@@ -77,6 +77,25 @@ fn normalize(vector: &[f32], dimensions: usize) -> Result<Vec<f32>> {
         .collect())
 }
 
+/// Map items on all available cores, preserving order.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if threads <= 1 || items.len() < 2 {
+        return items.iter().map(f).collect();
+    }
+    let f = &f;
+    std::thread::scope(|scope| {
+        let workers = items
+            .chunks(items.len().div_ceil(threads))
+            .map(|part| scope.spawn(move || part.iter().map(f).collect::<Vec<_>>()))
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("worker thread panicked"))
+            .collect()
+    })
+}
+
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
     let (left, left_tail) = left.as_chunks::<8>();
     let (right, right_tail) = right.as_chunks::<8>();

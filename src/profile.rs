@@ -11,6 +11,7 @@ pub(crate) struct Phases {
     pub postings: f64,
     pub selection: f64,
     pub rerank: f64,
+    pub graph: f64,
 }
 
 pub(crate) struct Timer(Option<(&'static str, Instant)>);
@@ -30,6 +31,7 @@ impl Timer {
                 "postings" => &mut profile.postings,
                 "selection" => &mut profile.selection,
                 "rerank" => &mut profile.rerank,
+                "graph" => &mut profile.graph,
                 _ => unreachable!(),
             };
             *field += start.elapsed().as_secs_f64() * 1000.0;
@@ -69,12 +71,15 @@ pub fn regional(engine: &mut Engine, queries: &[Query], config: &SearchConfig) -
     let started = Instant::now();
     engine.prepare_regional()?;
     let preparation_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if config.graph_candidates.is_some() {
+        engine.prepare_dense_graph()?;
+    }
     let posting_payload_bytes = engine.regional_index().payload_bytes();
     let quantized_vector_bytes = engine.regional_index().quantized_bytes();
     for query in queries.iter().take(32) {
         engine.search(query, crate::ranking::Strategy::Regional, config)?;
     }
-    let mut samples: [Vec<f64>; 8] = Default::default();
+    let mut samples: [Vec<f64>; 9] = Default::default();
     let mut signatures = Vec::new();
     for query in queries {
         let start = Instant::now();
@@ -86,7 +91,8 @@ pub fn regional(engine: &mut Engine, queries: &[Query], config: &SearchConfig) -
             + profile.vectors
             + profile.postings
             + profile.selection
-            + profile.rerank;
+            + profile.rerank
+            + profile.graph;
         let values = [
             profile.rescue,
             profile.routing,
@@ -94,6 +100,7 @@ pub fn regional(engine: &mut Engine, queries: &[Query], config: &SearchConfig) -
             profile.postings,
             profile.selection,
             profile.rerank,
+            profile.graph,
             (elapsed - measured).max(0.0),
             elapsed,
         ];
@@ -127,6 +134,7 @@ pub fn regional(engine: &mut Engine, queries: &[Query], config: &SearchConfig) -
         "regional_postings",
         "regional_top_k",
         "rerank_and_hits",
+        "global_graph",
         "other",
         "total",
     ];

@@ -11,7 +11,7 @@ use anyhow::{Result, ensure};
 use clap::ValueEnum;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +41,10 @@ pub struct SearchConfig {
     /// Best-scoring leaf regions seeded into routing (default 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_entries: Option<usize>,
+    /// Add this many nearest passages from the persisted global HNSW graph to
+    /// the regional dense list (searched with `graph_width`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_candidates: Option<usize>,
     pub routing_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regional_rerank: Option<RegionalRerank>,
@@ -95,6 +99,7 @@ impl Default for SearchConfig {
             rescue_max_scored: None,
             regional_rescore: None,
             routing_entries: None,
+            graph_candidates: None,
             routing_ms: 0,
             regional_rerank: None,
         }
@@ -133,6 +138,10 @@ impl SearchConfig {
             self.routing_entries.is_none_or(|entries| entries > 0),
             "routing needs at least one entry region"
         );
+        ensure!(
+            self.graph_candidates.is_none_or(|count| count > 0),
+            "graph candidates must be positive"
+        );
         if let Some(weights) = self.regional_rerank {
             weights.validate()?;
         }
@@ -154,6 +163,8 @@ pub struct Work {
     pub vector_comparisons: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rescored_vector_comparisons: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_vector_comparisons: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elasticsearch_took_ms: Option<u64>,
     pub routing_comparisons: usize,
@@ -180,6 +191,9 @@ pub struct Hit {
     pub lexical_rank: Option<usize>,
     pub vector_rank: Option<usize>,
     pub global_lexical_rank: Option<usize>,
+    /// Rank among the global HNSW graph's nearest passages, when that source ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_rank: Option<usize>,
     pub routes: Vec<Route>,
 }
 
@@ -259,6 +273,7 @@ fn search_with(
     let mut routes = regional::Routes::default();
     let mut stop_reason = "complete";
     let mut rescue_scores = None;
+    let mut graph_ranks = HashMap::new();
     let timer = Timer::start(&profile, "rescue");
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
@@ -350,7 +365,23 @@ fn search_with(
             for (rank, id) in selection.lexical.into_iter().enumerate() {
                 candidates.entry(id).or_default().lexical = Some(rank + 1);
             }
-            selection.nearest
+            let mut nearest = selection.nearest;
+            if let Some(count) = config.graph_candidates {
+                let timer = Timer::start(&profile, "graph");
+                let (graph, comparisons) = engine.nearest_dense(vector, count, config.graph_width);
+                work.graph_vector_comparisons = Some(comparisons);
+                let regional = nearest.iter().map(|hit| hit.id).collect::<HashSet<_>>();
+                for (rank, hit) in graph.into_iter().enumerate() {
+                    graph_ranks.insert(hit.id, rank + 1);
+                    if !regional.contains(&hit.id) {
+                        nearest.push(hit);
+                    }
+                }
+                nearest.sort_unstable_by(|a, b| b.cmp(a));
+                nearest.truncate(config.depth);
+                timer.finish(&mut profile);
+            }
+            nearest
         }
     };
     for (rank, hit) in nearest.iter().enumerate() {
@@ -441,6 +472,7 @@ fn search_with(
             lexical_rank: candidate.lexical,
             vector_rank: candidate.vector,
             global_lexical_rank,
+            graph_rank: graph_ranks.get(&id).copied(),
             routes: routes.for_hit(engine, id, &expanded),
         });
     }

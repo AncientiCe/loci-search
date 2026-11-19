@@ -138,3 +138,43 @@ fn compact_snapshot_preserves_regional_rankings_and_work() -> anyhow::Result<()>
     }
     Ok(())
 }
+
+#[test]
+fn graph_candidates_add_nearest_passages_outside_the_routing_budget() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("graph.sqlite");
+    let (embedding, passages, queries) = fixture::generate(512)?;
+    ingest(&db, passages, embedding, 16)?;
+    let mut engine = Engine::open(&db)?;
+    let starved = SearchConfig {
+        limit: 10,
+        depth: 30,
+        max_regions: 1,
+        max_chunks: 4,
+        rescue: 1,
+        ..SearchConfig::default()
+    };
+    let with_graph = SearchConfig {
+        graph_candidates: Some(20),
+        ..starved.clone()
+    };
+    let query = &queries[0];
+    let before = engine.search(query, Strategy::Regional, &starved)?;
+    let after = engine.search(query, Strategy::Regional, &with_graph)?;
+    assert!(before.hits.iter().all(|hit| hit.graph_rank.is_none()));
+    assert!(after.hits.iter().any(|hit| hit.graph_rank.is_some()));
+    assert!(after.work.graph_vector_comparisons.is_some_and(|count| count > 0));
+    assert!(after.candidates.len() > before.candidates.len());
+    // The regional budget still bounds the routed scan.
+    assert!(after.work.regional_chunks_scored <= starved.max_chunks);
+    let saved = engine.graph_path();
+    assert!(saved.exists());
+    // A fresh engine reuses the saved graph and returns the same ranking.
+    let mut reopened = Engine::open(&db)?;
+    let again = reopened.search(query, Strategy::Regional, &with_graph)?;
+    let ids = |result: &SearchResult| {
+        result.hits.iter().map(|hit| hit.source.id.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&again), ids(&after));
+    Ok(())
+}

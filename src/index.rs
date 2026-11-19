@@ -12,7 +12,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -237,7 +237,9 @@ pub struct Engine {
     pub(crate) lengths: Vec<usize>,
     pub(crate) topology: Topology,
     graph: Option<Graph>,
+    dense_graph: Option<Graph>,
     regional: Option<RegionalIndex>,
+    path: PathBuf,
 }
 
 impl Engine {
@@ -311,7 +313,9 @@ impl Engine {
             lengths,
             topology: Topology { regions, members },
             graph: None,
+            dense_graph: None,
             regional: None,
+            path: path.to_path_buf(),
         })
     }
 
@@ -319,6 +323,54 @@ impl Engine {
         if self.graph.is_none() {
             self.graph = Some(Graph::build(&self.vectors));
         }
+    }
+
+    /// Path of the persisted batched HNSW graph for this index.
+    pub fn graph_path(&self) -> PathBuf {
+        let mut path = self.path.clone().into_os_string();
+        path.push(".hnsw");
+        path.into()
+    }
+
+    /// Load the persisted batched HNSW graph, building and saving it if needed.
+    pub(crate) fn prepare_dense_graph(&mut self) -> Result<()> {
+        if self.dense_graph.is_none() {
+            let manifest = serde_json::to_string(&self.manifest)?;
+            let path = self.graph_path();
+            let graph = match Graph::load(&path, &manifest)? {
+                Some(graph) => graph,
+                None => {
+                    let graph = Graph::build_batched(&self.vectors);
+                    graph.save(&path, &manifest)?;
+                    graph
+                }
+            };
+            ensure!(graph.len() == self.ids.len(), "graph size differs from the index");
+            self.dense_graph = Some(graph);
+        }
+        Ok(())
+    }
+
+    /// Rebuild and save the batched HNSW graph, replacing any saved copy.
+    pub fn build_dense_graph(&mut self) -> Result<PathBuf> {
+        let manifest = serde_json::to_string(&self.manifest)?;
+        let path = self.graph_path();
+        let graph = Graph::build_batched(&self.vectors);
+        graph.save(&path, &manifest)?;
+        self.dense_graph = Some(graph);
+        Ok(path)
+    }
+
+    pub(crate) fn nearest_dense(
+        &self,
+        vector: &[f32],
+        depth: usize,
+        width: usize,
+    ) -> (Vec<Neighbor>, usize) {
+        self.dense_graph
+            .as_ref()
+            .expect("prepared dense graph")
+            .search(&self.vectors, vector, depth, width)
     }
 
     pub(crate) fn prepare_regional(&mut self) -> Result<()> {
@@ -345,6 +397,9 @@ impl Engine {
         }
         if strategy == Strategy::Regional {
             self.prepare_regional()?;
+            if config.graph_candidates.is_some() {
+                self.prepare_dense_graph()?;
+            }
         }
         ranking::search(self, query, &vector, strategy, config)
     }
@@ -358,6 +413,9 @@ impl Engine {
         config.validate()?;
         let vector = self.query_vector(query)?;
         self.prepare_regional()?;
+        if config.graph_candidates.is_some() {
+            self.prepare_dense_graph()?;
+        }
         ranking::profile_regional(self, query, &vector, config, phases)
     }
 

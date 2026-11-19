@@ -30,6 +30,11 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
+    /// Build and save the batched global HNSW graph next to an index.
+    GraphBuild {
+        #[arg(long)]
+        db: PathBuf,
+    },
     /// Tune bounded global lexical rescue on development queries only.
     RescueDev {
         #[arg(long)]
@@ -78,6 +83,9 @@ enum Command {
         /// Seed routing with this many best-scoring leaf regions (default 2).
         #[arg(long)]
         routing_entries: Option<usize>,
+        /// Add this many nearest passages from the persisted global HNSW graph.
+        #[arg(long)]
+        graph_candidates: Option<usize>,
     },
     /// Generate deterministic passages, embeddings, and relevance judgments.
     Fixture {
@@ -125,6 +133,9 @@ enum Command {
         /// Seed routing with this many best-scoring leaf regions (default 2).
         #[arg(long)]
         routing_entries: Option<usize>,
+        /// Add this many nearest passages from the persisted global HNSW graph.
+        #[arg(long)]
+        graph_candidates: Option<usize>,
         #[command(flatten)]
         settings: Settings,
     },
@@ -170,6 +181,9 @@ enum Command {
         /// Change only the number of routing entry regions in a frozen comparison.
         #[arg(long, requires = "frozen_report")]
         routing_entries: Option<usize>,
+        /// Change only the global HNSW candidate count in a frozen comparison.
+        #[arg(long, requires = "frozen_report")]
+        graph_candidates: Option<usize>,
         /// Loopback URL for a prepared single-shard Elasticsearch index.
         #[arg(long, requires_all = ["db", "elastic_index"], conflicts_with = "fixture")]
         elastic_url: Option<String>,
@@ -214,6 +228,7 @@ impl From<Settings> for SearchConfig {
             rescue_max_scored: None,
             regional_rescore: None,
             routing_entries: None,
+            graph_candidates: None,
             routing_ms: settings.routing_ms,
             regional_rerank: None,
         }
@@ -222,6 +237,17 @@ impl From<Settings> for SearchConfig {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::GraphBuild { db } => {
+            let mut engine = Engine::open(&db)?;
+            let started = std::time::Instant::now();
+            let path = engine.build_dense_graph()?;
+            print_json(&serde_json::json!({
+                "path": path,
+                "nodes": engine.manifest.chunks,
+                "build_ms": started.elapsed().as_secs_f64() * 1000.0,
+                "bytes": std::fs::metadata(&path)?.len(),
+            }))?;
+        }
         Command::RescueDev {
             db,
             dev,
@@ -264,6 +290,7 @@ fn main() -> Result<()> {
             rescue_max_scored,
             regional_rescore,
             routing_entries,
+            graph_candidates,
         } => {
             let mut engine = Engine::open(&db)?;
             let mut frozen = json::<bench::FrozenComparison>(&frozen_report)?;
@@ -275,6 +302,9 @@ fn main() -> Result<()> {
             }
             if let Some(entries) = routing_entries {
                 frozen = frozen.with_routing_entries(entries)?;
+            }
+            if let Some(count) = graph_candidates {
+                frozen = frozen.with_graph_candidates(count)?;
             }
             let config = frozen.regional_config(&engine)?;
             let queries = jsonl::<Query>(&queries)?;
@@ -318,6 +348,7 @@ fn main() -> Result<()> {
             rescue_max_scored,
             regional_rescore,
             routing_entries,
+            graph_candidates,
             settings,
         } => {
             let query = json::<Query>(&query)?;
@@ -350,6 +381,13 @@ fn main() -> Result<()> {
                 );
                 config.routing_entries = routing_entries;
             }
+            if graph_candidates.is_some() {
+                ensure!(
+                    strategy == Strategy::Regional,
+                    "--graph-candidates requires regional search"
+                );
+                config.graph_candidates = graph_candidates;
+            }
             let result = Engine::open(&db)?.search(&query, strategy, &config)?;
             if explain {
                 print_json(&result)?;
@@ -379,6 +417,7 @@ fn main() -> Result<()> {
             rescue_max_scored,
             regional_rescore,
             routing_entries,
+            graph_candidates,
             elastic_url,
             elastic_index,
             settings,
@@ -432,6 +471,9 @@ fn main() -> Result<()> {
                     }
                     if let Some(entries) = routing_entries {
                         frozen = frozen.with_routing_entries(entries)?;
+                    }
+                    if let Some(count) = graph_candidates {
+                        frozen = frozen.with_graph_candidates(count)?;
                     }
                     bench::evaluate_frozen(&mut engine, &queries, &run, &frozen, &client, traces)?
                 } else {

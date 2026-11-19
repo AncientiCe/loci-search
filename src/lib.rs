@@ -35,6 +35,7 @@ pub struct Passage {
     pub text: String,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
     pub vector: Vec<f32>,
 }
 

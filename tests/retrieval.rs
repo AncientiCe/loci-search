@@ -1,6 +1,6 @@
 use loci_search::{
     fixture,
-    index::{Engine, ingest},
+    index::{Engine, ingest, ingest_compact},
     ranking::{RegionalRerank, SearchConfig, SearchResult, Strategy},
 };
 
@@ -110,5 +110,31 @@ fn regional_reranker_preserves_candidates_and_global_control_scores() -> anyhow:
         scores(engine.search(query, Strategy::Global, &config)?),
         scores(engine.search(query, Strategy::Global, &tuned)?),
     );
+    Ok(())
+}
+
+#[test]
+fn compact_snapshot_preserves_regional_rankings_and_work() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let normal = directory.path().join("normal.sqlite");
+    let compact = directory.path().join("compact.sqlite");
+    let (embedding, passages, queries) = fixture::generate(128)?;
+    let (_, same_passages, _) = fixture::generate(128)?;
+    ingest(&normal, passages, embedding.clone(), 16)?;
+    assert_eq!(
+        ingest_compact(&compact, same_passages, embedding, 16)?.schema,
+        2
+    );
+    let mut normal = Engine::open(&normal)?;
+    let mut compact = Engine::open(&compact)?;
+    let config = SearchConfig::default();
+    for query in &queries {
+        let baseline = normal.search(query, Strategy::Regional, &config)?;
+        let reduced = compact.search(query, Strategy::Regional, &config)?;
+        assert_eq!(
+            serde_json::to_value(baseline)?,
+            serde_json::to_value(reduced)?
+        );
+    }
     Ok(())
 }

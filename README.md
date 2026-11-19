@@ -1,5 +1,7 @@
 # Loci Search
 
+[Benchmark history and timings](benchmarks/README.md)
+
 Loci Search is a single-node Rust retrieval experiment. It stores each passage and embedding once in SQLite, assigns passages to up to three semantic regions, and routes queries through a fixed hierarchy and shared-membership edges. Each hit identifies its source document, revision, and span. Explanations include the region paths and ranking signals that surfaced it.
 
 ## Reproduce the 100,000-chunk benchmark
@@ -138,6 +140,31 @@ The transfer copies all three Loci configurations from the FiQA report, includin
 | Elasticsearch hybrid, tuned on NFCorpus dev | 0.3557 | 0.3299 | 20.70 ms |
 
 Regional recall was 2.42 percentage points higher, with a paired 95% bootstrap interval from +1.30 to +3.52 points. Its p95 was 91% lower in this end-to-end comparison, which includes Elasticsearch's loopback request and the original Elasticsearch reranker. Loci scored every passage for each query under the transferred routing budget, so these measurements describe a small-corpus run.
+
+## Run the million-passage HotpotQA comparison
+
+The snapshot uses [BEIR HotpotQA](https://huggingface.co/datasets/BeIR/hotpotqa) and the [pinned Cohere embeddings](https://huggingface.co/datasets/CohereLabs/beir-embed-english-v3/tree/f018922a46a51388348a307ec2fef28019a33026/hotpotqa). Save the [BEIR archive](https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/hotpotqa.zip) as `runs/hotpotqa-1m/hotpotqa.zip`. Save the six corpus Parquet shards under `runs/hotpotqa-1m/parquet/` and the development and test query Parquet files as `dev.parquet` and `test.parquet` in `runs/hotpotqa-1m`.
+
+The snapshot chooses 250 dev and 320 test queries by hash from the official splits, keeps their normalized texts disjoint, and includes every judged positive. It fills the remaining slots with a seeded sample of real passages from the same source corpus. The preparation verifies all input checksums and writes the selected query IDs and sampling recipe to `snapshot.json`.
+
+```sh
+python -m pip install --target runs/hotpotqa-1m/python-deps numpy==2.4.2 orjson==3.11.7
+python -B tools/hotpotqa.py runs/hotpotqa-1m --deps runs/fiqa/python-deps --deps runs/hotpotqa-1m/python-deps
+cargo run --locked --release -- ingest --db runs/hotpotqa-1m/loci.sqlite --passages runs/hotpotqa-1m/passages.jsonl --embedding runs/hotpotqa-1m/embedding.json --vectors runs/hotpotqa-1m/vectors.f32 --compact --leaf-size 8192
+python -B tools/fiqa.py index runs/hotpotqa-1m --index loci-hotpotqa-1m --vectors runs/hotpotqa-1m/vectors.f32 --deps runs/hotpotqa-1m/python-deps --workers 8 --max-segments 8
+cargo run --locked --release -- bench --db runs/hotpotqa-1m/loci.sqlite --queries runs/hotpotqa-1m/test.jsonl --dev runs/hotpotqa-1m/dev.jsonl --transfer-report runs/fiqa/evaluation-recall/report.json --head-to-head --elastic-url http://127.0.0.1:19200 --elastic-index loci-hotpotqa-1m --out runs/hotpotqa-1m/evaluation
+```
+
+Both engines use the same packed float32 vectors and passage texts. Loci uses larger target leaves for the million-passage topology and the transferred FiQA reranker and per-query work limits. The compact layout avoids a redundant on-disk copy of regional postings and reconstructs them from canonical text and memberships. The head-to-head run builds only the controls needed for Loci regional and Elasticsearch. Elasticsearch uses one shard and float HNSW and tunes its analyzer and candidate count on dev by Recall@100, then nDCG@10. Warm p95 is end-to-end and includes the Elasticsearch loopback request.
+
+Elasticsearch selected the standard analyzer and 768 HNSW candidates. Its final index had eight segments and no active merges. The bulk build used a 4 GiB heap and eight active JVM processors. Tuning and timing used the previous benchmark settings of a 2 GiB heap and four active processors.
+
+| Strategy | Recall@100 | nDCG@10 | Warm p50 | Warm p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Loci regional, frozen FiQA reranker | 86.25% | 0.7896 | 35.08 ms | 44.26 ms |
+| Tuned Elasticsearch hybrid | 90.00% | 0.7930 | 20.64 ms | 30.38 ms |
+
+The three warm sequential passes covered all 320 sampled test queries. Loci scored exactly 24,000 passages with regional cosine on every query, or 2.40% of the corpus. Global lexical rescue scored a mean of 894,306 passages. The deduplicated mean across those two scoring paths was 895,391 passages, or 89.54% of the corpus. The paired 95% bootstrap interval for regional minus Elasticsearch Recall@100 was −5.63 to −1.88 percentage points.
 
 ## Use an existing corpus
 

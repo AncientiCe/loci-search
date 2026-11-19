@@ -35,6 +35,23 @@ pub(crate) struct RegionalIndex {
     regional_norms: Vec<f64>,
 }
 
+pub(crate) struct LexicalRescue {
+    pub ranked: Vec<usize>,
+    pub scores: Option<RescueScores>,
+}
+
+#[derive(Default)]
+pub(crate) struct RescueScores {
+    scores: Vec<f64>,
+    pub count: usize,
+}
+
+impl RescueScores {
+    fn contains(&self, id: usize) -> bool {
+        self.scores.get(id).is_some_and(|&score| score > 0.0)
+    }
+}
+
 impl RegionalIndex {
     pub fn load(engine: &Engine) -> Result<Self> {
         let mut addresses = vec![Vec::new(); engine.ids.len()];
@@ -91,12 +108,18 @@ impl RegionalIndex {
         engine: &Engine,
         terms: &BTreeSet<String>,
         limit: usize,
-    ) -> Result<Vec<usize>> {
+    ) -> Result<LexicalRescue> {
         if terms.is_empty() || limit == 0 {
-            return Ok(Vec::new());
+            return Ok(LexicalRescue {
+                ranked: Vec::new(),
+                scores: Some(RescueScores::default()),
+            });
         }
         if !self.fts5_compatible || terms.iter().any(|term| term.len() > FTS5_TOKEN_BYTES) {
-            return engine.lexical(terms, limit);
+            return Ok(LexicalRescue {
+                ranked: engine.lexical(terms, limit)?,
+                scores: None,
+            });
         }
         let mut scores = vec![0.0; self.rescue_norms.len()];
         // Reproduce SQLite's OR-of-single-terms BM25 formula, in query term order.
@@ -113,7 +136,11 @@ impl RegionalIndex {
                 scores[id] += idf * ((tf * 2.2) / (tf + self.rescue_norms[id]));
             }
         }
-        Ok(top_lexical(scores, limit))
+        let (ranked, count) = top_lexical(&scores, limit);
+        Ok(LexicalRescue {
+            ranked,
+            scores: Some(RescueScores { scores, count }),
+        })
     }
 
     /// Bytes reserved for posting payloads and length factors, excluding map/string overhead.
@@ -194,6 +221,7 @@ pub(crate) fn select(
     vector: &[f32],
     config: &SearchConfig,
     weights: &BTreeMap<String, f64>,
+    rescue_scores: Option<&RescueScores>,
     work: &mut Work,
     profile: &mut Option<&mut Phases>,
 ) -> Selection {
@@ -208,6 +236,7 @@ pub(crate) fn select(
     };
     let mut expanded = Vec::new();
     let mut nearest = Vec::new();
+    let mut dense_only = 0;
     let mut lexical = vec![0.0; engine.ids.len()];
     let mut seen_terms = vec![0_u64; engine.ids.len()];
     let mut extra_terms = HashSet::new();
@@ -246,6 +275,9 @@ pub(crate) fn select(
             visit.scanned = offset + 1;
             if routes.first_visit[id] == UNVISITED && nearest.len() < config.max_chunks {
                 routes.first_visit[id] = visit_number;
+                if rescue_scores.is_some_and(|rescue| !rescue.contains(id)) {
+                    dense_only += 1;
+                }
                 nearest.push(Neighbor {
                     id,
                     similarity: cosine(vector, &engine.vectors[id]),
@@ -298,8 +330,9 @@ pub(crate) fn select(
     work.routing_comparisons = router.comparisons;
     work.regional_chunks_scored = nearest.len();
     work.vector_comparisons = nearest.len();
+    work.regional_or_rescue_chunks_scored = rescue_scores.map(|rescue| rescue.count + dense_only);
     let timer = Timer::start(profile, "selection");
-    let lexical = top_lexical(lexical, config.depth);
+    let (lexical, _) = top_lexical(&lexical, config.depth);
     retain_top(&mut nearest, config.depth, |a, b| b.cmp(a));
     timer.finish(profile);
     Selection {
@@ -311,16 +344,18 @@ pub(crate) fn select(
     }
 }
 
-fn top_lexical(scores: Vec<f64>, depth: usize) -> Vec<usize> {
+fn top_lexical(scores: &[f64], depth: usize) -> (Vec<usize>, usize) {
     let mut matches = scores
-        .into_iter()
+        .iter()
+        .copied()
         .enumerate()
         .filter(|(_, score)| *score > 0.0)
         .collect::<Vec<_>>();
+    let count = matches.len();
     retain_top(&mut matches, depth, |a, b| {
         b.1.total_cmp(&a.1).then(a.0.cmp(&b.0))
     });
-    matches.into_iter().map(|(id, _)| id).collect()
+    (matches.into_iter().map(|(id, _)| id).collect(), count)
 }
 
 fn retain_top<T>(items: &mut Vec<T>, depth: usize, compare: impl Fn(&T, &T) -> Ordering) {
@@ -356,11 +391,11 @@ mod tests {
         engine.prepare_regional()?;
         for query in ["common", "common rare", "école CAFÉ", "absent"] {
             let tokens = terms(query).collect::<BTreeSet<_>>();
+            let all_matches = engine.lexical(&tokens, 128)?;
             for limit in [1, 40, 128] {
-                assert_eq!(
-                    engine.regional_index().rescue(&engine, &tokens, limit)?,
-                    engine.lexical(&tokens, limit)?
-                );
+                let rescue = engine.regional_index().rescue(&engine, &tokens, limit)?;
+                assert_eq!(rescue.ranked, all_matches[..all_matches.len().min(limit)]);
+                assert_eq!(rescue.scores.unwrap().count, all_matches.len());
             }
         }
         Ok(())

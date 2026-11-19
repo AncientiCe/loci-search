@@ -120,6 +120,10 @@ pub struct Work {
     pub regions_expanded: usize,
     pub regional_postings_read: usize,
     pub regional_chunks_scored: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global_rescue_chunks_scored: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regional_or_rescue_chunks_scored: Option<usize>,
     pub vector_comparisons: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elasticsearch_took_ms: Option<u64>,
@@ -225,13 +229,17 @@ fn search_with(
     let mut expanded = Vec::new();
     let mut routes = regional::Routes::default();
     let mut stop_reason = "complete";
+    let mut rescue_scores = None;
     let timer = Timer::start(&profile, "rescue");
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
         Strategy::Regional => {
-            engine
+            let rescue = engine
                 .regional_index()
-                .rescue(engine, &query_terms, config.rescue)?
+                .rescue(engine, &query_terms, config.rescue)?;
+            work.global_rescue_chunks_scored = rescue.scores.as_ref().map(|scores| scores.count);
+            rescue_scores = rescue.scores;
+            rescue.ranked
         }
         Strategy::Exact => Vec::new(),
         Strategy::Elasticsearch => external
@@ -294,8 +302,15 @@ fn search_with(
                 .collect()
         }
         Strategy::Regional => {
-            let selection =
-                regional::select(engine, vector, config, &weights, &mut work, &mut profile);
+            let selection = regional::select(
+                engine,
+                vector,
+                config,
+                &weights,
+                rescue_scores.as_ref(),
+                &mut work,
+                &mut profile,
+            );
             stop_reason = selection.stop_reason;
             expanded = selection.expanded;
             routes = selection.routes;

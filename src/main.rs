@@ -4,14 +4,14 @@ use loci_search::{
     Embedding, Passage, Query,
     bench::{self, Run},
     elastic, fixture,
-    index::{Engine, ingest},
+    index::{Engine, ingest, ingest_compact},
     profile,
     ranking::{RegionalRerank, SearchConfig, Strategy},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -72,6 +72,12 @@ enum Command {
         passages: PathBuf,
         #[arg(long)]
         embedding: PathBuf,
+        /// Packed little-endian f32 vectors in passage JSONL order.
+        #[arg(long)]
+        vectors: Option<PathBuf>,
+        /// Store the canonical snapshot without duplicate on-disk regional postings.
+        #[arg(long)]
+        compact: bool,
         #[arg(long, default_value_t = 1024)]
         leaf_size: usize,
     },
@@ -115,6 +121,9 @@ enum Command {
         /// Carry over Loci settings from this report and tune only Elasticsearch on the new dev split.
         #[arg(long, requires = "dev")]
         transfer_report: Option<PathBuf>,
+        /// Compare only Loci regional and Elasticsearch, without building the other controls.
+        #[arg(long, requires = "transfer_report")]
+        head_to_head: bool,
         /// Reuse all settings and verify the original index statistics without tuning.
         #[arg(long, requires = "elastic_url")]
         frozen_report: Option<PathBuf>,
@@ -217,11 +226,20 @@ fn main() -> Result<()> {
             db,
             passages,
             embedding,
+            vectors,
+            compact,
             leaf_size,
         } => {
-            let passages = jsonl::<Passage>(&passages)?;
+            let mut passages = jsonl::<Passage>(&passages)?;
             let embedding = json::<Embedding>(&embedding)?;
-            let manifest = ingest(&db, passages, embedding, leaf_size)?;
+            if let Some(path) = vectors {
+                read_packed_vectors(&path, &mut passages, embedding.dimensions)?;
+            }
+            let manifest = if compact {
+                ingest_compact(&db, passages, embedding, leaf_size)?
+            } else {
+                ingest(&db, passages, embedding, leaf_size)?
+            };
             print_json(&manifest)?;
         }
         Command::Search {
@@ -264,6 +282,7 @@ fn main() -> Result<()> {
             exact_queries,
             dev,
             transfer_report,
+            head_to_head,
             frozen_report,
             regional_rerank,
             elastic_url,
@@ -326,6 +345,7 @@ fn main() -> Result<()> {
                             &run,
                             &source,
                             development,
+                            head_to_head,
                             traces,
                         )?
                     } else {
@@ -362,6 +382,37 @@ fn index_bytes(path: &Path) -> Result<u64> {
         Err(error) => return Err(error.into()),
     };
     Ok(fs::metadata(path)?.len() + wal_bytes)
+}
+
+fn read_packed_vectors(path: &Path, passages: &mut [Passage], dimensions: usize) -> Result<()> {
+    let record_bytes = dimensions
+        .checked_mul(size_of::<f32>())
+        .context("vector size overflows")?;
+    let bytes = record_bytes
+        .checked_mul(passages.len())
+        .context("packed vector file size overflows")?;
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    ensure!(
+        record_bytes > 0 && file.metadata()?.len() == bytes as u64,
+        "packed vector file does not match passage count and embedding dimensions"
+    );
+    let mut reader = BufReader::with_capacity(1 << 20, file);
+    let mut buffer = vec![0_u8; record_bytes];
+    for passage in passages {
+        ensure!(
+            passage.vector.is_empty(),
+            "passage {} also includes a JSON vector",
+            passage.id
+        );
+        reader.read_exact(&mut buffer)?;
+        let (components, _) = buffer.as_chunks::<4>();
+        passage.vector = components.iter().copied().map(f32::from_le_bytes).collect();
+    }
+    ensure!(
+        reader.fill_buf()?.is_empty(),
+        "packed vector file grew during ingest"
+    );
+    Ok(())
 }
 
 fn output_dir(path: &Path) -> Result<()> {

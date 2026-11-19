@@ -70,9 +70,29 @@ pub(crate) fn frequencies(text: &str) -> BTreeMap<String, usize> {
 
 pub fn ingest(
     path: &Path,
+    passages: Vec<Passage>,
+    embedding: Embedding,
+    leaf_size: usize,
+) -> Result<Manifest> {
+    ingest_with_layout(path, passages, embedding, leaf_size, false)
+}
+
+/// Store canonical text and memberships without duplicating reconstructed regional postings.
+pub fn ingest_compact(
+    path: &Path,
+    passages: Vec<Passage>,
+    embedding: Embedding,
+    leaf_size: usize,
+) -> Result<Manifest> {
+    ingest_with_layout(path, passages, embedding, leaf_size, true)
+}
+
+fn ingest_with_layout(
+    path: &Path,
     mut passages: Vec<Passage>,
     embedding: Embedding,
     leaf_size: usize,
+    compact: bool,
 ) -> Result<Manifest> {
     ensure!(!passages.is_empty(), "at least one passage is required");
     ensure!(
@@ -87,9 +107,10 @@ pub fn ingest(
     );
     let mut vectors = Vec::with_capacity(passages.len());
     let mut term_stats = BTreeMap::<String, usize>::new();
-    let mut term_lists = Vec::with_capacity(passages.len());
+    let mut term_lists = (!compact).then(|| Vec::with_capacity(passages.len()));
+    let mut lengths = Vec::with_capacity(passages.len());
     let mut total_length = 0;
-    for passage in &passages {
+    for passage in &mut passages {
         ensure!(
             !passage.id.is_empty() && !passage.document.is_empty() && !passage.revision.is_empty(),
             "passage ID, document and revision are required"
@@ -99,20 +120,31 @@ pub fn ingest(
             "invalid source span for {}",
             passage.id
         );
+        let vector = std::mem::take(&mut passage.vector);
         vectors.push(
-            normalize(&passage.vector, embedding.dimensions)
+            normalize(&vector, embedding.dimensions)
                 .with_context(|| format!("passage {}", passage.id))?,
         );
         let frequencies = frequencies(&passage.text);
         for term in frequencies.keys() {
             *term_stats.entry(term.clone()).or_default() += 1;
         }
-        total_length += frequencies.values().sum::<usize>();
-        term_lists.push(frequencies);
+        let length = frequencies.values().sum::<usize>();
+        total_length += length;
+        lengths.push(length);
+        if let Some(lists) = &mut term_lists {
+            lists.push(frequencies);
+        }
+    }
+    if compact {
+        eprintln!("Building the topology for {} passages", passages.len());
     }
     let topology = Topology::build(&vectors, leaf_size);
+    if compact {
+        eprintln!("Writing canonical passages and memberships to SQLite");
+    }
     let manifest = Manifest {
-        schema: 1,
+        schema: if compact { 2 } else { 1 },
         embedding,
         chunks: passages.len(),
         regions: topology.regions.len(),
@@ -148,7 +180,6 @@ pub fn ingest(
                 .iter()
                 .flat_map(|x| x.to_le_bytes())
                 .collect::<Vec<_>>();
-            let length = term_lists[id].values().sum::<usize>();
             artifact.execute(params![
                 id,
                 passage.id,
@@ -159,10 +190,13 @@ pub fn ingest(
                 passage.text,
                 serde_json::to_string(&passage.metadata)?,
                 vector,
-                length
+                lengths[id]
             ])?;
             let tokenized = terms(&passage.text).collect::<Vec<_>>().join(" ");
             lexical.execute(params![id, tokenized])?;
+            if compact && (id + 1).is_multiple_of(100_000) {
+                eprintln!("Wrote {} of {} passages", id + 1, passages.len());
+            }
         }
         let mut best = vec![f32::NEG_INFINITY; passages.len()];
         for (region, ids) in topology.members.iter().enumerate() {
@@ -180,8 +214,10 @@ pub fn ingest(
                     "within_margin"
                 };
                 membership.execute(params![id, chunk, similarity, reason])?;
-                for (term, &frequency) in &term_lists[chunk] {
-                    posting.execute(params![id, term, chunk, frequency])?;
+                if let Some(lists) = &term_lists {
+                    for (term, &frequency) in &lists[chunk] {
+                        posting.execute(params![id, term, chunk, frequency])?;
+                    }
                 }
             }
         }
@@ -213,7 +249,7 @@ impl Engine {
         let json: String = conn.query_row("SELECT json FROM manifest", [], |row| row.get(0))?;
         let manifest: Manifest = serde_json::from_str(&json)?;
         ensure!(
-            manifest.schema == 1,
+            matches!(manifest.schema, 1 | 2),
             "unsupported index schema {}",
             manifest.schema
         );

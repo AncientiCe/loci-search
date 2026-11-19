@@ -47,7 +47,38 @@ pub struct Report {
     #[serde(skip_serializing_if = "Option::is_none")]
     regional_minus_elasticsearch: Option<PairedEffects>,
     results: Vec<Summary>,
+    regional_scoring: ScoredPassages,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    global_rescue_scoring: Option<ScoredPassages>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    regional_or_rescue_scoring: Option<ScoredPassages>,
     exact_reference: Vec<Reference>,
+}
+
+#[derive(Debug, Serialize)]
+struct ScoredPassages {
+    mean: f64,
+    p50: usize,
+    p95: usize,
+    min: usize,
+    max: usize,
+    mean_corpus_fraction: f64,
+}
+
+impl ScoredPassages {
+    fn summarize(mut counts: Vec<usize>, corpus_size: usize) -> Self {
+        counts.sort_unstable();
+        let mean = counts.iter().map(|&count| count as f64).sum::<f64>() / counts.len() as f64;
+        let percentile = |p: f64| counts[(counts.len() as f64 * p).ceil() as usize - 1];
+        Self {
+            mean,
+            p50: percentile(0.50),
+            p95: percentile(0.95),
+            min: counts[0],
+            max: counts[counts.len() - 1],
+            mean_corpus_fraction: mean / corpus_size as f64,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +128,9 @@ struct Sample {
     regions: usize,
     postings: usize,
     comparisons: usize,
+    chunks_scored: usize,
+    rescue_chunks_scored: Option<usize>,
+    regional_or_rescue_chunks_scored: Option<usize>,
     routing_comparisons: usize,
     rerank_comparisons: usize,
 }
@@ -141,10 +175,21 @@ pub struct FrozenComparison {
 
 impl FrozenComparison {
     fn validate_plans(&self) -> Result<()> {
-        let expected = STRATEGIES.into_iter().chain([Strategy::Elasticsearch]);
+        let strategies = self
+            .settings
+            .iter()
+            .map(|plan| plan.strategy)
+            .collect::<Vec<_>>();
         ensure!(
-            self.settings.iter().map(|plan| plan.strategy).eq(expected),
-            "comparison report must contain the four original strategies"
+            strategies
+                == [
+                    Strategy::Bm25,
+                    Strategy::Global,
+                    Strategy::Regional,
+                    Strategy::Elasticsearch
+                ]
+                || strategies == [Strategy::Regional, Strategy::Elasticsearch],
+            "comparison report must contain a supported comparison of strategies"
         );
         for plan in &self.settings {
             plan.config.validate()?;
@@ -258,6 +303,7 @@ enum Comparison<'a> {
     Tune {
         development: Development<'a>,
         native_source: Option<&'a FrozenComparison>,
+        head_to_head: bool,
     },
     Frozen {
         report: &'a FrozenComparison,
@@ -290,6 +336,7 @@ pub fn evaluate_comparison(
         Some(Comparison::Tune {
             development,
             native_source: None,
+            head_to_head: false,
         }),
         traces,
     )
@@ -301,6 +348,7 @@ pub fn evaluate_transfer(
     run: &Run,
     report: &FrozenComparison,
     development: Development<'_>,
+    head_to_head: bool,
     traces: impl Write,
 ) -> Result<Report> {
     evaluate_with(
@@ -311,6 +359,7 @@ pub fn evaluate_transfer(
         Some(Comparison::Tune {
             development,
             native_source: Some(report),
+            head_to_head,
         }),
         traces,
     )
@@ -411,6 +460,7 @@ fn evaluate_with(
     if let Some(Comparison::Tune {
         development: dev,
         native_source,
+        head_to_head,
     }) = &comparison
     {
         ensure!(
@@ -428,15 +478,30 @@ fn evaluate_with(
         );
         if let Some(source) = native_source {
             source.validate_plans()?;
-            settings = source.settings[..STRATEGIES.len()].to_vec();
+            settings = source
+                .settings
+                .iter()
+                .filter(|plan| {
+                    plan.strategy != Strategy::Elasticsearch
+                        && (!head_to_head || plan.strategy == Strategy::Regional)
+                })
+                .cloned()
+                .collect();
             native_settings_source = Some(source.index.clone());
             eprintln!("Carrying over Loci settings and tuning only Elasticsearch");
         }
     }
     let started = Instant::now();
-    eprintln!("Building the in-process HNSW control");
-    engine.prepare_global();
-    let graph_build_ms = milliseconds(started);
+    let graph_build_ms = if settings
+        .iter()
+        .any(|plan| plan.strategy == Strategy::Global)
+    {
+        eprintln!("Building the in-process HNSW control");
+        engine.prepare_global();
+        milliseconds(started)
+    } else {
+        0.0
+    };
     let started = Instant::now();
     engine.prepare_regional()?;
     let regional_prepare_ms = milliseconds(started);
@@ -444,6 +509,7 @@ fn evaluate_with(
     let tuning = if let Some(Comparison::Tune {
         development,
         native_source,
+        ..
     }) = &comparison
     {
         let transfer = native_source.is_some();
@@ -489,6 +555,9 @@ fn evaluate_with(
                     regions: result.work.regions_expanded,
                     postings: result.work.regional_postings_read,
                     comparisons: result.work.vector_comparisons,
+                    chunks_scored: result.work.regional_chunks_scored,
+                    rescue_chunks_scored: result.work.global_rescue_chunks_scored,
+                    regional_or_rescue_chunks_scored: result.work.regional_or_rescue_chunks_scored,
                     routing_comparisons: result.work.routing_comparisons,
                     rerank_comparisons: result.work.rerank_vector_comparisons,
                 };
@@ -514,13 +583,12 @@ fn evaluate_with(
         }
     }
     traces.flush()?;
-    let global = &settings
+    let graph_width = settings
         .iter()
         .find(|plan| plan.strategy == Strategy::Global)
-        .expect("global plan")
-        .config;
+        .map(|plan| plan.config.graph_width);
     let mut exact_reference = Vec::new();
-    let references = run.exact_queries.min(queries.len());
+    let references = graph_width.map_or(0, |_| run.exact_queries.min(queries.len()));
     for position in 0..references {
         let query = &queries[position * queries.len() / references];
         let vector = engine.query_vector(query)?;
@@ -529,8 +597,11 @@ fn evaluate_with(
         let exact = engine.exact(&vector, depth);
         let exact_ms = milliseconds(started);
         let started = Instant::now();
-        let (approximate, approximate_comparisons) =
-            engine.nearest(&vector, depth, global.graph_width);
+        let (approximate, approximate_comparisons) = engine.nearest(
+            &vector,
+            depth,
+            graph_width.expect("global reference enabled"),
+        );
         let approximate_ms = milliseconds(started);
         let ids = |neighbors: &[graph::Neighbor]| {
             neighbors
@@ -574,6 +645,28 @@ fn evaluate_with(
             recall_at_100: paired(regional, elastic, |quality| quality.recall_at_100)?,
         })
     });
+    let regional_index = settings
+        .iter()
+        .position(|plan| plan.strategy == Strategy::Regional)
+        .expect("regional plan");
+    let regional_samples = &samples[&(regional_index, None)];
+    let scoring = |counts| ScoredPassages::summarize(counts, engine.manifest.chunks);
+    let regional_scoring = scoring(
+        regional_samples
+            .iter()
+            .map(|sample| sample.chunks_scored)
+            .collect(),
+    );
+    let global_rescue_scoring = regional_samples
+        .iter()
+        .map(|sample| sample.rescue_chunks_scored)
+        .collect::<Option<Vec<_>>>()
+        .map(scoring);
+    let regional_or_rescue_scoring = regional_samples
+        .iter()
+        .map(|sample| sample.regional_or_rescue_chunks_scored)
+        .collect::<Option<Vec<_>>>()
+        .map(scoring);
     let results = samples
         .into_iter()
         .map(|((index, group), samples)| {
@@ -609,6 +702,9 @@ fn evaluate_with(
         tuning,
         regional_minus_elasticsearch,
         results,
+        regional_scoring,
+        global_rescue_scoring,
+        regional_or_rescue_scoring,
         exact_reference,
     })
 }

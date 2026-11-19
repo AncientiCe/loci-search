@@ -1,6 +1,9 @@
 """Prepare BEIR passages and index the same inputs into Elasticsearch."""
 
 import argparse
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 import csv
 import hashlib
 import io
@@ -8,7 +11,8 @@ import json
 from collections import defaultdict
 from pathlib import Path
 import sys
-from time import perf_counter
+from time import perf_counter, sleep
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
@@ -124,65 +128,110 @@ def prepare(directory, dependencies, dataset="fiqa"):
     print(f"Prepared {len(seen):,} passages, {len(splits['dev'])} dev queries and {len(splits['test'])} test queries")
 
 
-def request(base, route, body=None, method="POST"):
+def request(base, route, body=None, method="POST", *, timeout=180):
     headers = {}
     if isinstance(body, bytes):
         headers["Content-Type"] = "application/x-ndjson"
     elif body is not None:
         body = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
-    with urlopen(Request(base + route, data=body, headers=headers, method=method), timeout=180) as response:
+    with urlopen(Request(base + route, data=body, headers=headers, method=method), timeout=timeout) as response:
         return json.load(response)
 
 
-def elastic_index(directory, base, index):
+def elastic_index(directory, base, index, vectors=None, workers=1, max_segments=1):
+    if workers < 1 or max_segments < 1:
+        raise ValueError("Workers and maximum segments must be positive")
     started = perf_counter()
+    mapping = {"dynamic": "strict", "properties": {
+        "text": {"type": "text", "analyzer": "standard", "fields": {
+            "english": {"type": "text", "analyzer": "english"},
+        }},
+        "embedding": {
+            "type": "dense_vector", "dims": DIMENSIONS, "similarity": "cosine",
+            "index_options": {"type": "hnsw", "m": 16, "ef_construction": 100},
+        },
+        "passage_id": {"type": "keyword"},
+    }}
+    if vectors is not None:
+        import numpy as np
+        import orjson
+        # Search uses Lucene's vectors and returns IDs, so avoid another vector copy in _source.
+        mapping["_source"] = {"excludes": ["embedding"]}
     request(base, "/" + index, {
         "settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "-1"},
-        "mappings": {"dynamic": "strict", "properties": {
-            "text": {"type": "text", "analyzer": "standard", "fields": {
-                "english": {"type": "text", "analyzer": "english"},
-            }},
-            "embedding": {
-                "type": "dense_vector", "dims": DIMENSIONS, "similarity": "cosine",
-                "index_options": {"type": "hnsw", "m": 16, "ef_construction": 100},
-            },
-            "passage_id": {"type": "keyword"},
-        }},
+        "mappings": mapping,
     }, method="PUT")
-    count = 0
 
     def send(batch):
-        result = request(base, "/" + index + "/_bulk", ("\n".join(batch) + "\n").encode())
-        if result["errors"]:
-            error = next(item["index"] for item in result["items"] if "error" in item["index"])
-            raise ValueError(error)
+        for attempt in range(5):
+            try:
+                result = request(base, "/" + index + "/_bulk", batch)
+            except HTTPError as error:
+                if error.code not in (429, 502, 503, 504) or attempt == 4:
+                    raise
+            except (URLError, TimeoutError):
+                if attempt == 4:
+                    raise
+            else:
+                if not result["errors"]:
+                    return
+                failed = [item["index"] for item in result["items"] if "error" in item["index"]]
+                if attempt == 4 or any(item["status"] not in (429, 502, 503, 504) for item in failed):
+                    raise ValueError(failed[0])
+            sleep(2**attempt)
 
+    count = 0
+    pending = deque()
     batch = []
-    with (directory / "passages.jsonl").open(encoding="utf-8") as stream:
+    packed = vectors.open("rb") if vectors is not None else nullcontext()
+    with ThreadPoolExecutor(max_workers=workers) as pool, (directory / "passages.jsonl").open(encoding="utf-8") as stream, packed as vector_stream:
         for line in stream:
             passage = json.loads(line)
             identifier = passage["id"]
-            batch.extend((
-                json.dumps({"index": {"_id": identifier}}),
-                json.dumps({"passage_id": identifier, "text": passage["text"], "embedding": passage["vector"]},
-                           ensure_ascii=False, separators=(",", ":")),
-            ))
+            header = json.dumps({"index": {"_id": identifier}}).encode()
+            document = {"passage_id": identifier, "text": passage["text"]}
+            if vector_stream is not None:
+                data = vector_stream.read(DIMENSIONS * 4)
+                if len(data) != DIMENSIONS * 4 or "vector" in passage:
+                    raise ValueError(f"Invalid packed vector for {identifier}")
+                document["embedding"] = np.frombuffer(data, dtype="<f4")
+                body = orjson.dumps(document, option=orjson.OPT_SERIALIZE_NUMPY)
+            else:
+                document["embedding"] = passage["vector"]
+                body = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode()
+            batch.extend((header, body))
             count += 1
-            if len(batch) == 600:
-                send(batch)
+            if len(batch) == 800:
+                pending.append(pool.submit(send, b"\n".join(batch) + b"\n"))
                 batch.clear()
-                if count % 6000 == 0:
-                    print(f"Indexed {count:,} passages", flush=True)
-    if batch:
-        send(batch)
+                if len(pending) >= workers * 2:
+                    pending.popleft().result()
+                if count % 20_000 == 0:
+                    print(f"Submitted {count:,} passages", flush=True)
+        if vector_stream is not None and vector_stream.read(1):
+            raise ValueError("Packed vector file contains excess data")
+        if batch:
+            pending.append(pool.submit(send, b"\n".join(batch) + b"\n"))
+        for batch_result in pending:
+            batch_result.result()
     request(base, "/" + index + "/_refresh")
-    request(base, "/" + index + "/_forcemerge?max_num_segments=1")
+    print(f"Waiting for Elasticsearch merge to at most {max_segments} segments", flush=True)
+    # Wait on the request itself. Asynchronous task results need a separate system shard.
+    merge = request(base, f"/{index}/_forcemerge?max_num_segments={max_segments}", timeout=3600)
+    if merge["_shards"]["failed"]:
+        raise ValueError(merge)
+    request(base, "/" + index + "/_refresh")
     total = request(base, "/" + index + "/_count", method="GET")["count"]
     if count != total:
         raise ValueError(f"Indexed {total} passages, expected {count}")
-    index_bytes = request(base, "/" + index + "/_stats/store", method="GET")["_all"]["primaries"]["store"]["size_in_bytes"]
-    report = {"documents": count, "build_seconds": perf_counter() - started, "index_bytes": index_bytes}
+    primary = request(base, "/" + index + "/_stats/store,segments", method="GET")["_all"]["primaries"]
+    if primary["segments"]["count"] > max_segments:
+        raise ValueError("Elasticsearch still has more segments than requested")
+    report = {
+        "documents": count, "build_seconds": perf_counter() - started,
+        "index_bytes": primary["store"]["size_in_bytes"], "segments": primary["segments"]["count"],
+    }
     (directory / "elastic-build.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(report, flush=True)
 
@@ -198,11 +247,17 @@ def main():
     index.add_argument("directory", type=Path)
     index.add_argument("--url", default="http://127.0.0.1:19200")
     index.add_argument("--index", default="loci-fiqa")
+    index.add_argument("--vectors", type=Path)
+    index.add_argument("--deps", type=Path, action="append", default=[])
+    index.add_argument("--workers", type=int, default=1)
+    index.add_argument("--max-segments", type=int, default=1)
     args = parser.parse_args()
     if args.command == "prepare":
         prepare(args.directory, args.deps, args.dataset)
     else:
-        elastic_index(args.directory, args.url.rstrip("/"), args.index)
+        for folder in args.deps:
+            sys.path.insert(0, str(folder.resolve()))
+        elastic_index(args.directory, args.url.rstrip("/"), args.index, args.vectors, args.workers, args.max_segments)
 
 
 if __name__ == "__main__":

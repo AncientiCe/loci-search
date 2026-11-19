@@ -1,4 +1,5 @@
 pub mod bench;
+pub mod elastic;
 pub mod fixture;
 mod graph;
 pub mod index;
@@ -74,7 +75,20 @@ fn normalize(vector: &[f32], dimensions: usize) -> Result<Vec<f32>> {
 }
 
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum()
+    let (left, left_tail) = left.as_chunks::<8>();
+    let (right, right_tail) = right.as_chunks::<8>();
+    let mut lanes = [0.0; 8];
+    for (a, b) in left.iter().zip(right) {
+        for lane in 0..lanes.len() {
+            lanes[lane] += a[lane] * b[lane];
+        }
+    }
+    lanes.into_iter().sum::<f32>()
+        + left_tail
+            .iter()
+            .zip(right_tail)
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
 }
 
 fn terms(text: &str) -> impl Iterator<Item = String> + '_ {

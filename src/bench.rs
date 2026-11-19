@@ -1,5 +1,5 @@
 use crate::{
-    Query, graph,
+    Query, elastic, graph,
     index::{Engine, Manifest},
     ranking::{SearchConfig, SearchResult, Strategy},
     topology::{MEMBERSHIP_LIMIT, MEMBERSHIP_MARGIN},
@@ -31,6 +31,13 @@ pub struct Report {
     queries: usize,
     repeats: usize,
     config: SearchConfig,
+    settings: Vec<Plan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elasticsearch: Option<elastic::Info>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tuning: Option<Tuning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    regional_minus_elasticsearch: Option<PairedEffects>,
     results: Vec<Summary>,
     exact_reference: Vec<Reference>,
 }
@@ -49,7 +56,7 @@ struct Summary {
     p95_ms: f64,
     regions_expanded_mean: f64,
     regional_postings_read_mean: f64,
-    vector_comparisons_mean: f64,
+    vector_comparisons_mean: Option<f64>,
     routing_comparisons_mean: f64,
     rerank_vector_comparisons_mean: f64,
 }
@@ -106,22 +113,96 @@ pub struct Run {
     pub open_ms: f64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct Plan {
+    strategy: Strategy,
+    config: SearchConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elastic: Option<elastic::Options>,
+}
+
+impl Plan {
+    fn native(strategy: Strategy, config: &SearchConfig) -> Self {
+        Self {
+            strategy,
+            config: config.clone(),
+            elastic: None,
+        }
+    }
+
+    fn search(
+        &self,
+        engine: &mut Engine,
+        client: Option<&elastic::Client>,
+        query: &Query,
+    ) -> Result<SearchResult> {
+        if let Some(options) = self.elastic {
+            return client.expect("configured Elasticsearch").search(
+                engine,
+                query,
+                &self.config,
+                options,
+            );
+        }
+        engine.search(query, self.strategy, &self.config)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct Tuning {
+    queries: usize,
+    selection: &'static str,
+    trials: Vec<Trial>,
+}
+
+#[derive(Debug, Serialize)]
+struct Trial {
+    plan: Plan,
+    ndcg_at_10: f64,
+    recall_at_100: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct PairedEffects {
+    ndcg_at_10: Interval,
+    recall_at_100: Interval,
+}
+
+#[derive(Debug, Serialize)]
+struct Interval {
+    mean: f64,
+    lower_95: f64,
+    upper_95: f64,
+}
+
 pub fn evaluate(
     engine: &mut Engine,
     queries: &[Query],
     config: &SearchConfig,
     run: &Run,
-    mut traces: impl Write,
+    traces: impl Write,
 ) -> Result<Report> {
-    config.validate()?;
-    ensure!(
-        config.limit >= 100,
-        "benchmark requires at least 100 result slots"
-    );
-    ensure!(
-        !queries.is_empty() && run.repeats > 0,
-        "queries and repeats are required"
-    );
+    evaluate_with(engine, queries, config, run, None, traces)
+}
+
+pub struct Development<'a> {
+    pub queries: &'a [Query],
+    pub elasticsearch: &'a elastic::Client,
+}
+
+pub fn evaluate_comparison(
+    engine: &mut Engine,
+    queries: &[Query],
+    config: &SearchConfig,
+    run: &Run,
+    development: Development<'_>,
+    traces: impl Write,
+) -> Result<Report> {
+    evaluate_with(engine, queries, config, run, Some(development), traces)
+}
+
+fn validate_queries(engine: &Engine, queries: &[Query]) -> Result<()> {
+    ensure!(!queries.is_empty(), "queries are required");
     let mut query_ids = BTreeSet::new();
     for query in queries {
         ensure!(
@@ -149,22 +230,81 @@ pub fn evaluate(
         }
         engine.query_vector(query)?;
     }
+    Ok(())
+}
+
+fn evaluate_with(
+    engine: &mut Engine,
+    queries: &[Query],
+    config: &SearchConfig,
+    run: &Run,
+    development: Option<Development<'_>>,
+    mut traces: impl Write,
+) -> Result<Report> {
+    config.validate()?;
+    ensure!(
+        config.limit >= 100,
+        "benchmark requires at least 100 result slots"
+    );
+    ensure!(run.repeats > 0, "repeats are required");
+    let mut settings = STRATEGIES
+        .map(|strategy| Plan::native(strategy, config))
+        .to_vec();
+    let client = development.as_ref().map(|dev| dev.elasticsearch);
+    let elasticsearch = client.map(elastic::Client::info).transpose()?;
+    if let Some(info) = &elasticsearch {
+        ensure!(
+            info.documents == engine.manifest.chunks && info.active_primary_shards == 1,
+            "Elasticsearch must have one active primary shard and the same document count as Loci"
+        );
+    }
+    if let Some(dev) = &development {
+        ensure!(
+            config.depth <= 8_664,
+            "Elasticsearch tuning requires depth <= 8664"
+        );
+        validate_queries(engine, dev.queries)?;
+        let test_ids = queries
+            .iter()
+            .map(|query| &query.id)
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            !dev.queries.iter().any(|query| test_ids.contains(&query.id)),
+            "development and test query IDs overlap"
+        );
+    }
     let started = Instant::now();
+    eprintln!("Building the in-process HNSW control");
     engine.prepare_global();
     let graph_build_ms = milliseconds(started);
+    let tuning = if let Some(dev) = development {
+        let (plans, tuning) = tune(engine, config, dev)?;
+        settings.truncate(1);
+        settings.extend(plans);
+        Some(tuning)
+    } else {
+        None
+    };
+    validate_queries(engine, queries)?;
+    eprintln!(
+        "Warming {} strategies over {} evaluation queries",
+        settings.len(),
+        queries.len()
+    );
     // One untimed pass per engine before collecting warm, single-query samples.
     for query in queries {
-        for strategy in STRATEGIES {
-            engine.search(query, strategy, config)?;
+        for plan in &settings {
+            plan.search(engine, client, query)?;
         }
     }
     let mut samples = BTreeMap::<(usize, Option<&str>), Vec<Sample>>::new();
     for repeat in 0..run.repeats {
+        eprintln!("Measuring repeat {} of {}", repeat + 1, run.repeats);
         for (position, query) in queries.iter().enumerate() {
-            for offset in 0..STRATEGIES.len() {
-                let index = (position + repeat + offset) % STRATEGIES.len();
+            for offset in 0..settings.len() {
+                let index = (position + repeat + offset) % settings.len();
                 let started = Instant::now();
-                let result = engine.search(query, STRATEGIES[index], config)?;
+                let result = settings[index].search(engine, client, query)?;
                 let elapsed_ms = milliseconds(started);
                 let ranked = result
                     .hits
@@ -203,6 +343,11 @@ pub fn evaluate(
         }
     }
     traces.flush()?;
+    let global = &settings
+        .iter()
+        .find(|plan| plan.strategy == Strategy::Global)
+        .expect("global plan")
+        .config;
     let mut exact_reference = Vec::new();
     let references = run.exact_queries.min(queries.len());
     for position in 0..references {
@@ -214,7 +359,7 @@ pub fn evaluate(
         let exact_ms = milliseconds(started);
         let started = Instant::now();
         let (approximate, approximate_comparisons) =
-            engine.nearest(&vector, depth, config.graph_width);
+            engine.nearest(&vector, depth, global.graph_width);
         let approximate_ms = milliseconds(started);
         let ids = |neighbors: &[graph::Neighbor]| {
             neighbors
@@ -246,11 +391,23 @@ pub fn evaluate(
             approximate_comparisons,
         });
     }
+    let regional_minus_elasticsearch = tuning.as_ref().and_then(|_| {
+        let first_round = |strategy| {
+            let index = settings.iter().position(|plan| plan.strategy == strategy)?;
+            Some(&samples.get(&(index, None))?[..queries.len()])
+        };
+        let regional = first_round(Strategy::Regional)?;
+        let elastic = first_round(Strategy::Elasticsearch)?;
+        Some(PairedEffects {
+            ndcg_at_10: paired(regional, elastic, |quality| quality.ndcg_at_10)?,
+            recall_at_100: paired(regional, elastic, |quality| quality.recall_at_100)?,
+        })
+    });
     let results = samples
         .into_iter()
         .map(|((index, group), samples)| {
             summarize(
-                STRATEGIES[index],
+                settings[index].strategy,
                 group.unwrap_or("(all queries)"),
                 &samples,
             )
@@ -272,8 +429,150 @@ pub fn evaluate(
         queries: queries.len(),
         repeats: run.repeats,
         config: config.clone(),
+        settings,
+        elasticsearch,
+        tuning,
+        regional_minus_elasticsearch,
         results,
         exact_reference,
+    })
+}
+
+fn tune(
+    engine: &mut Engine,
+    config: &SearchConfig,
+    dev: Development<'_>,
+) -> Result<(Vec<Plan>, Tuning)> {
+    let global = [0, 56, 184, 312, 568, 824]
+        .into_iter()
+        .map(|extra| {
+            Plan::native(
+                Strategy::Global,
+                &SearchConfig {
+                    graph_width: config.depth + extra,
+                    ..config.clone()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let regional = [
+        (2, 768),
+        (4, 1536),
+        (8, 3072),
+        (12, 6000),
+        (24, 12000),
+        (36, 24000),
+    ]
+    .into_iter()
+    .map(|(max_regions, max_chunks)| {
+        Plan::native(
+            Strategy::Regional,
+            &SearchConfig {
+                max_regions,
+                max_chunks,
+                max_postings: max_chunks * 10,
+                ..config.clone()
+            },
+        )
+    })
+    .collect::<Vec<_>>();
+    let external = [elastic::Analyzer::Standard, elastic::Analyzer::English]
+        .into_iter()
+        .flat_map(|analyzer| {
+            [56, 568, 1336].into_iter().map(move |extra| Plan {
+                strategy: Strategy::Elasticsearch,
+                config: config.clone(),
+                elastic: Some(elastic::Options {
+                    analyzer,
+                    num_candidates: config.depth + extra,
+                }),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut selected = Vec::new();
+    let mut trials = Vec::new();
+    for grid in [global, regional, external] {
+        let mut best: Option<(f64, f64, Plan)> = None;
+        for plan in grid {
+            let mut ndcg = 0.0;
+            let mut recall = 0.0;
+            for query in dev.queries {
+                let result = plan.search(engine, Some(dev.elasticsearch), query)?;
+                let ranked = result
+                    .hits
+                    .iter()
+                    .map(|hit| hit.source.id.as_str())
+                    .collect::<Vec<_>>();
+                let quality = quality(query, &ranked, &result);
+                ndcg += quality
+                    .ndcg_at_10
+                    .ok_or_else(|| anyhow::anyhow!("no positive dev judgment for {}", query.id))?;
+                recall += quality.recall_at_100.unwrap_or_default();
+            }
+            ndcg /= dev.queries.len() as f64;
+            recall /= dev.queries.len() as f64;
+            eprintln!(
+                "Dev {:?} trial {} nDCG@10 {ndcg:.4}, Recall@100 {recall:.4}",
+                plan.strategy,
+                trials.len() + 1
+            );
+            if best.as_ref().is_none_or(|(high_ndcg, high_recall, _)| {
+                (ndcg, recall) > (*high_ndcg, *high_recall)
+            }) {
+                best = Some((ndcg, recall, plan.clone()));
+            }
+            trials.push(Trial {
+                plan,
+                ndcg_at_10: ndcg,
+                recall_at_100: recall,
+            });
+        }
+        selected.push(best.expect("nonempty tuning grid").2);
+    }
+    Ok((
+        selected,
+        Tuning {
+            queries: dev.queries.len(),
+            selection: "highest dev nDCG@10, then Recall@100, then earliest trial",
+            trials,
+        },
+    ))
+}
+
+fn paired(
+    regional: &[Sample],
+    elastic: &[Sample],
+    field: fn(Quality) -> Option<f64>,
+) -> Option<Interval> {
+    let differences = regional
+        .iter()
+        .zip(elastic)
+        .filter_map(|(a, b)| Some(field(a.quality)? - field(b.quality)?))
+        .collect::<Vec<_>>();
+    if differences.is_empty() {
+        return None;
+    }
+    let n = differences.len();
+    let mean = differences.iter().sum::<f64>() / n as f64;
+    let mut seed = 0x4c6f_6369_5345_4152_u64;
+    let mut distribution = (0..2_000)
+        .map(|_| {
+            (0..n)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    differences[(seed % n as u64) as usize]
+                })
+                .sum::<f64>()
+                / n as f64
+        })
+        .collect::<Vec<_>>();
+    distribution.sort_unstable_by(f64::total_cmp);
+    Some(Interval {
+        mean,
+        lower_95: distribution[50],
+        upper_95: distribution[1949],
     })
 }
 
@@ -361,7 +660,8 @@ fn summarize(strategy: Strategy, group: &str, samples: &[Sample]) -> Summary {
         p95_ms: percentile(0.95),
         regions_expanded_mean: mean(|s| s.regions),
         regional_postings_read_mean: mean(|s| s.postings),
-        vector_comparisons_mean: mean(|s| s.comparisons),
+        vector_comparisons_mean: (strategy != Strategy::Elasticsearch)
+            .then(|| mean(|s| s.comparisons)),
         routing_comparisons_mean: mean(|s| s.routing_comparisons),
         rerank_vector_comparisons_mean: mean(|s| s.rerank_comparisons),
     }

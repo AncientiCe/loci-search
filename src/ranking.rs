@@ -1,5 +1,6 @@
 use crate::{
     Query, cosine,
+    elastic::Lists,
     graph::Neighbor,
     index::{Engine, Source, frequencies},
     terms,
@@ -21,6 +22,8 @@ pub enum Strategy {
     Exact,
     Global,
     Regional,
+    #[value(skip)]
+    Elasticsearch,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -78,6 +81,8 @@ pub struct Work {
     pub regional_postings_read: usize,
     pub regional_chunks_scored: usize,
     pub vector_comparisons: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elasticsearch_took_ms: Option<u64>,
     pub routing_comparisons: usize,
     pub global_lexical_returned: usize,
     pub rerank_vector_comparisons: usize,
@@ -127,6 +132,34 @@ pub(crate) fn search(
     strategy: Strategy,
     config: &SearchConfig,
 ) -> Result<SearchResult> {
+    search_with(engine, query, vector, strategy, config, None)
+}
+
+pub(crate) fn search_external(
+    engine: &Engine,
+    query: &Query,
+    vector: &[f32],
+    config: &SearchConfig,
+    lists: Lists,
+) -> Result<SearchResult> {
+    search_with(
+        engine,
+        query,
+        vector,
+        Strategy::Elasticsearch,
+        config,
+        Some(lists),
+    )
+}
+
+fn search_with(
+    engine: &Engine,
+    query: &Query,
+    vector: &[f32],
+    strategy: Strategy,
+    config: &SearchConfig,
+    external: Option<Lists>,
+) -> Result<SearchResult> {
     let query_terms = terms(&query.text).collect::<BTreeSet<_>>();
     let mut work = Work::default();
     let mut expanded = Vec::new();
@@ -136,10 +169,19 @@ pub(crate) fn search(
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
         Strategy::Regional => engine.lexical(&query_terms, config.rescue)?,
         Strategy::Exact => Vec::new(),
+        Strategy::Elasticsearch => external
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Elasticsearch lists are required"))?
+            .lexical
+            .clone(),
     };
     work.global_lexical_returned = global_lexical.len();
     let mut weights = BTreeMap::new();
-    if matches!(strategy, Strategy::Regional | Strategy::Global) {
+    let hybrid = matches!(
+        strategy,
+        Strategy::Regional | Strategy::Global | Strategy::Elasticsearch
+    );
+    if hybrid {
         let mut df = engine
             .conn
             .prepare_cached("SELECT df FROM term_stats WHERE term=?")?;
@@ -172,6 +214,18 @@ pub(crate) fn search(
             let (nearest, comparisons) = engine.nearest(vector, config.depth, config.graph_width);
             work.vector_comparisons = comparisons;
             nearest
+        }
+        Strategy::Elasticsearch => {
+            let lists = external.expect("external rankings validated");
+            work.elasticsearch_took_ms = Some(lists.took_ms);
+            lists
+                .vector
+                .into_iter()
+                .map(|id| Neighbor {
+                    id,
+                    similarity: 0.0,
+                })
+                .collect()
         }
         Strategy::Regional => {
             let start = Instant::now();
@@ -290,7 +344,6 @@ pub(crate) fn search(
         })
         .map(|(id, _)| engine.ids[*id].clone())
         .collect();
-    let hybrid = matches!(strategy, Strategy::Global | Strategy::Regional);
     let total_weight = weights.values().sum::<f64>().max(f64::EPSILON);
     let mut reranked = Vec::with_capacity(fused.len());
     for (id, candidate) in fused {

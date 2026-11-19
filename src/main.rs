@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use loci_search::{
     Embedding, Passage, Query,
     bench::{self, Run},
-    fixture,
+    elastic, fixture,
     index::{Engine, ingest},
     ranking::{SearchConfig, Strategy},
 };
@@ -76,6 +76,14 @@ enum Command {
         repeats: usize,
         #[arg(long, default_value_t = 12)]
         exact_queries: usize,
+        /// Separate development-query JSONL used to tune the comparison.
+        #[arg(long, requires = "elastic_url")]
+        dev: Option<PathBuf>,
+        /// Loopback URL for a prepared single-shard Elasticsearch index.
+        #[arg(long, requires_all = ["db", "dev", "elastic_index"], conflicts_with = "fixture")]
+        elastic_url: Option<String>,
+        #[arg(long, requires = "elastic_url")]
+        elastic_index: Option<String>,
         #[command(flatten)]
         settings: Settings,
     },
@@ -167,6 +175,9 @@ fn main() -> Result<()> {
             leaf_size,
             repeats,
             exact_queries,
+            dev,
+            elastic_url,
+            elastic_index,
             settings,
         } => {
             let config = settings.into();
@@ -196,14 +207,31 @@ fn main() -> Result<()> {
                 open_ms: started.elapsed().as_secs_f64() * 1000.0,
             };
             eprintln!(
-                "Comparing {} strategies over {} chunks and {} queries",
-                3,
+                "Loaded {} chunks and {} evaluation queries",
                 engine.manifest.chunks,
                 queries.len()
             );
             let trace_path = out.join("traces.partial");
             let traces = BufWriter::new(File::create(&trace_path)?);
-            let report = bench::evaluate(&mut engine, &queries, &config, &run, traces)?;
+            let report = if let Some(url) = elastic_url {
+                let client =
+                    elastic::Client::new(&url, &elastic_index.context("provide --elastic-index")?)?;
+                let dev = jsonl::<Query>(&dev.context("provide --dev")?)?;
+                let development = bench::Development {
+                    queries: &dev,
+                    elasticsearch: &client,
+                };
+                bench::evaluate_comparison(
+                    &mut engine,
+                    &queries,
+                    &config,
+                    &run,
+                    development,
+                    traces,
+                )?
+            } else {
+                bench::evaluate(&mut engine, &queries, &config, &run, traces)?
+            };
             fs::rename(trace_path, out.join("traces.jsonl"))?;
             write_json(&out.join("report.json"), &report)?;
             println!(

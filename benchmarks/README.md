@@ -45,6 +45,8 @@ The latency columns summarize all recorded warm sequential queries. The [machine
 | HotpotQA 1M, int8 scan | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 22.72 ms | 33.32 ms |
 | HotpotQA 1M, HNSW candidates | 1,000,000 | 320 × 3 | Loci regional | 89.53% | 33.03 ms | 47.29 ms |
 | HotpotQA 1M, HNSW candidates | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 25.57 ms | 37.33 ms |
+| HotpotQA 1M, 12k budget and HNSW, fresh Elasticsearch | 1,000,000 | 320 × 3 | Loci regional | 89.38% | 19.31 ms | 31.01 ms |
+| HotpotQA 1M, 12k budget and HNSW, fresh Elasticsearch | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 27.45 ms | 41.20 ms |
 
 ## Loci preparation timings
 
@@ -180,3 +182,19 @@ Seeding more leaf entries into routing (leaf 1,024, 24,000 chunks) did not recov
 | 200 graph candidates | 91.20% | 3.78 ms | 35.05 ms | 46.61 ms |
 
 The held-out run froze 100 candidates. Loci regional reached 89.53% Recall@100 and 0.8005 nDCG@10 against 90.00% and 0.7930 for Elasticsearch. The paired 95% interval for the Recall@100 difference was −1.88 to +0.94 points and for nDCG@10 −0.0116 to +0.0262. Loci p95 was 47.29 ms against 37.33 ms for Elasticsearch in the same run.
+
+## HotpotQA 1M latency with HNSW candidates
+
+Reusing corpus-sized scratch buffers across queries, instead of allocating four 8 MB arrays per query, cut the development mean from 33.07 ms to 28.18 ms and p95 from 46.72 ms to 41.54 ms with identical signatures. With the graph supplying global nearest neighbors, a smaller regional budget then improved both latency and recall on development queries:
+
+| Regional chunks | Graph width | Recall@100 | Graph mean | Query mean | Query p95 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 24,000 | 256 | 91.20% | 3.56 ms | 28.18 ms | 41.54 ms |
+| 24,000 | 128 | 90.80% | 2.46 ms | 32.30 ms | 59.02 ms |
+| 12,000 | 256 | 91.80% | 3.81 ms | 22.20 ms | 36.80 ms |
+| 12,000 | 128 | 91.40% | 1.99 ms | 17.77 ms | 29.88 ms |
+| 8,000 | 128 | 91.40% | 2.79 ms | 22.99 ms | 43.22 ms |
+
+Selection used development recall first and froze 12,000 chunks with width 256. Single-pass timings vary by several milliseconds.
+
+The held-out run was repeated three times with the same frozen settings. All 960 regional traces matched across runs. In the first two, Elasticsearch p95 reached 75 to 77 ms, roughly double its earlier runs, probably because its heap had been paged out while Loci used more memory. After restarting Elasticsearch, Loci regional reached 89.38% Recall@100, 0.8005 nDCG@10, 19.31 ms p50 and 31.01 ms p95, against 90.00%, 0.7930, 27.45 ms and 41.20 ms. The paired Recall@100 difference was −0.63 points (95% interval −2.03 to +0.78). Earlier runs measured Elasticsearch p95 between 30.38 ms and 37.33 ms on this machine.

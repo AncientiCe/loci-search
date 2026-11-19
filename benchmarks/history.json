@@ -3241,6 +3241,612 @@
       "global_rescue_budget_hits": 0,
       "graph_build_ms": 369144.3208,
       "graph_bytes": 140468039
+    },
+    {
+      "id": "hotpotqa-1m-graph-c12000",
+      "title": "HotpotQA 1M, 12k budget and HNSW candidates (degraded Elasticsearch)",
+      "category": "held-out",
+      "source_report": "runs/hotpotqa-1m/evaluation-graph-c12000/report.json",
+      "source_traces": "runs/hotpotqa-1m/evaluation-graph-c12000/traces.jsonl",
+      "index": {
+        "schema": 2,
+        "embedding": {
+          "model_revision": "CohereLabs/beir-embed-english-v3:hotpotqa-1m:f018922a46a51388348a307ec2fef28019a33026",
+          "dimensions": 1024,
+          "normalization": "l2"
+        },
+        "chunks": 1000000,
+        "regions": 365,
+        "leaf_size": 8192,
+        "average_length": 47.437426
+      },
+      "queries": 320,
+      "repeats": 3,
+      "platform": [
+        "windows",
+        "x86_64"
+      ],
+      "index_bytes": 4973436928,
+      "ingest_ms": null,
+      "index_open_ms": 9144.0249,
+      "global_graph_build_ms": null,
+      "regional_cache_prepare_ms": 40957.3946,
+      "settings": [
+        {
+          "strategy": "regional",
+          "config": {
+            "limit": 100,
+            "depth": 200,
+            "graph_width": 256,
+            "max_regions": 36,
+            "max_chunks": 12000,
+            "max_postings": 120000,
+            "rescue": 40,
+            "rescue_max_scored": 256000,
+            "regional_rescore": 400,
+            "graph_candidates": 100,
+            "routing_ms": 0,
+            "regional_rerank": {
+              "coverage": 0.08,
+              "cosine": 0.92,
+              "fusion": 0.0
+            }
+          }
+        },
+        {
+          "strategy": "elasticsearch",
+          "config": {
+            "limit": 100,
+            "depth": 200,
+            "graph_width": 256,
+            "max_regions": 12,
+            "max_chunks": 6000,
+            "max_postings": 60000,
+            "rescue": 40,
+            "routing_ms": 0
+          },
+          "elastic": {
+            "analyzer": "standard",
+            "num_candidates": 768
+          }
+        }
+      ],
+      "es": {
+        "version": "8.19.25",
+        "index": "loci-hotpotqa-1m",
+        "documents": 1000000,
+        "active_primary_shards": 1,
+        "index_bytes": 6612138649
+      },
+      "native_settings_source": {
+        "schema": 1,
+        "embedding": {
+          "model_revision": "CohereLabs/beir-embed-english-v3:fiqa:9b862c5f1d023435f71ebeb8f71942a8caf3b90b1b07b14b435e7a31623c2a52",
+          "dimensions": 1024,
+          "normalization": "l2"
+        },
+        "chunks": 57638,
+        "regions": 159,
+        "leaf_size": 1024,
+        "average_length": 138.68425344390857
+      },
+      "paired_quality": {
+        "ndcg_at_10": {
+          "mean": 0.0074347381707214584,
+          "lower_95": -0.01156462599514235,
+          "upper_95": 0.026234014746424145
+        },
+        "recall_at_100": {
+          "mean": -0.00625,
+          "lower_95": -0.0203125,
+          "upper_95": 0.0078125
+        }
+      },
+      "scoring": {
+        "dense": {
+          "mean": 12000.0,
+          "p50": 12000,
+          "p95": 12000,
+          "min": 12000,
+          "max": 12000,
+          "mean_corpus_fraction": 0.012
+        },
+        "global_rescue": {
+          "mean": 494.465625,
+          "p50": 444,
+          "p95": 578,
+          "min": 360,
+          "max": 4453,
+          "mean_corpus_fraction": 0.000494465625
+        },
+        "either": {
+          "mean": 12419.128125,
+          "p50": 12382,
+          "p95": 12554,
+          "min": 12197,
+          "max": 15974,
+          "mean_corpus_fraction": 0.012419128125
+        }
+      },
+      "results": [
+        {
+          "strategy": "regional",
+          "group": "(all queries)",
+          "samples": 960,
+          "candidate_recall": 0.90625,
+          "ndcg_at_10": 0.8004722380908895,
+          "recall_at_100": 0.89375,
+          "all_evidence_at_100": 0.790625,
+          "lexical_rescue_relevant_candidates_mean": 0.09375,
+          "p50_ms": 19.2898,
+          "p95_ms": 35.2163,
+          "regions_expanded_mean": 1.2,
+          "regional_postings_read_mean": 59612.175,
+          "vector_comparisons_mean": 12000.0,
+          "routing_comparisons_mean": 371.671875,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "regional",
+          "group": "general",
+          "samples": 960,
+          "candidate_recall": 0.90625,
+          "ndcg_at_10": 0.8004722380908895,
+          "recall_at_100": 0.89375,
+          "all_evidence_at_100": 0.790625,
+          "lexical_rescue_relevant_candidates_mean": 0.09375,
+          "p50_ms": 19.2898,
+          "p95_ms": 35.2163,
+          "regions_expanded_mean": 1.2,
+          "regional_postings_read_mean": 59612.175,
+          "vector_comparisons_mean": 12000.0,
+          "routing_comparisons_mean": 371.671875,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "elasticsearch",
+          "group": "(all queries)",
+          "samples": 960,
+          "candidate_recall": 0.9203125,
+          "ndcg_at_10": 0.7930374999201679,
+          "recall_at_100": 0.9,
+          "all_evidence_at_100": 0.803125,
+          "lexical_rescue_relevant_candidates_mean": 0.0,
+          "p50_ms": 27.0313,
+          "p95_ms": 75.40289999999999,
+          "regions_expanded_mean": 0.0,
+          "regional_postings_read_mean": 0.0,
+          "vector_comparisons_mean": null,
+          "routing_comparisons_mean": 0.0,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "elasticsearch",
+          "group": "general",
+          "samples": 960,
+          "candidate_recall": 0.9203125,
+          "ndcg_at_10": 0.7930374999201679,
+          "recall_at_100": 0.9,
+          "all_evidence_at_100": 0.803125,
+          "lexical_rescue_relevant_candidates_mean": 0.0,
+          "p50_ms": 27.0313,
+          "p95_ms": 75.40289999999999,
+          "regions_expanded_mean": 0.0,
+          "regional_postings_read_mean": 0.0,
+          "vector_comparisons_mean": null,
+          "routing_comparisons_mean": 0.0,
+          "rerank_vector_comparisons_mean": 200.0
+        }
+      ],
+      "frozen_from": "runs/hotpotqa-1m/evaluation/report.json",
+      "global_rescue_budget_hits": 0,
+      "graph_build_ms": 369144.3208,
+      "graph_bytes": 140468039,
+      "note": "Elasticsearch p95 roughly double its earlier runs; its heap was likely paged out under memory pressure"
+    },
+    {
+      "id": "hotpotqa-1m-graph-c12000-rerun",
+      "title": "HotpotQA 1M, 12k budget and HNSW candidates (degraded Elasticsearch)",
+      "category": "held-out",
+      "source_report": "runs/hotpotqa-1m/evaluation-graph-c12000-rerun/report.json",
+      "source_traces": "runs/hotpotqa-1m/evaluation-graph-c12000-rerun/traces.jsonl",
+      "index": {
+        "schema": 2,
+        "embedding": {
+          "model_revision": "CohereLabs/beir-embed-english-v3:hotpotqa-1m:f018922a46a51388348a307ec2fef28019a33026",
+          "dimensions": 1024,
+          "normalization": "l2"
+        },
+        "chunks": 1000000,
+        "regions": 365,
+        "leaf_size": 8192,
+        "average_length": 47.437426
+      },
+      "queries": 320,
+      "repeats": 3,
+      "platform": [
+        "windows",
+        "x86_64"
+      ],
+      "index_bytes": 4973436928,
+      "ingest_ms": null,
+      "index_open_ms": 129258.91179999999,
+      "global_graph_build_ms": null,
+      "regional_cache_prepare_ms": 54939.931899999996,
+      "settings": [
+        {
+          "strategy": "regional",
+          "config": {
+            "limit": 100,
+            "depth": 200,
+            "graph_width": 256,
+            "max_regions": 36,
+            "max_chunks": 12000,
+            "max_postings": 120000,
+            "rescue": 40,
+            "rescue_max_scored": 256000,
+            "regional_rescore": 400,
+            "graph_candidates": 100,
+            "routing_ms": 0,
+            "regional_rerank": {
+              "coverage": 0.08,
+              "cosine": 0.92,
+              "fusion": 0.0
+            }
+          }
+        },
+        {
+          "strategy": "elasticsearch",
+          "config": {
+            "limit": 100,
+            "depth": 200,
+            "graph_width": 256,
+            "max_regions": 12,
+            "max_chunks": 6000,
+            "max_postings": 60000,
+            "rescue": 40,
+            "routing_ms": 0
+          },
+          "elastic": {
+            "analyzer": "standard",
+            "num_candidates": 768
+          }
+        }
+      ],
+      "es": {
+        "version": "8.19.25",
+        "index": "loci-hotpotqa-1m",
+        "documents": 1000000,
+        "active_primary_shards": 1,
+        "index_bytes": 6612138649
+      },
+      "native_settings_source": {
+        "schema": 1,
+        "embedding": {
+          "model_revision": "CohereLabs/beir-embed-english-v3:fiqa:9b862c5f1d023435f71ebeb8f71942a8caf3b90b1b07b14b435e7a31623c2a52",
+          "dimensions": 1024,
+          "normalization": "l2"
+        },
+        "chunks": 57638,
+        "regions": 159,
+        "leaf_size": 1024,
+        "average_length": 138.68425344390857
+      },
+      "paired_quality": {
+        "ndcg_at_10": {
+          "mean": 0.0074347381707214584,
+          "lower_95": -0.01156462599514235,
+          "upper_95": 0.026234014746424145
+        },
+        "recall_at_100": {
+          "mean": -0.00625,
+          "lower_95": -0.0203125,
+          "upper_95": 0.0078125
+        }
+      },
+      "scoring": {
+        "dense": {
+          "mean": 12000.0,
+          "p50": 12000,
+          "p95": 12000,
+          "min": 12000,
+          "max": 12000,
+          "mean_corpus_fraction": 0.012
+        },
+        "global_rescue": {
+          "mean": 494.465625,
+          "p50": 444,
+          "p95": 578,
+          "min": 360,
+          "max": 4453,
+          "mean_corpus_fraction": 0.000494465625
+        },
+        "either": {
+          "mean": 12419.128125,
+          "p50": 12382,
+          "p95": 12554,
+          "min": 12197,
+          "max": 15974,
+          "mean_corpus_fraction": 0.012419128125
+        }
+      },
+      "results": [
+        {
+          "strategy": "regional",
+          "group": "(all queries)",
+          "samples": 960,
+          "candidate_recall": 0.90625,
+          "ndcg_at_10": 0.8004722380908895,
+          "recall_at_100": 0.89375,
+          "all_evidence_at_100": 0.790625,
+          "lexical_rescue_relevant_candidates_mean": 0.09375,
+          "p50_ms": 20.9531,
+          "p95_ms": 39.1383,
+          "regions_expanded_mean": 1.2,
+          "regional_postings_read_mean": 59612.175,
+          "vector_comparisons_mean": 12000.0,
+          "routing_comparisons_mean": 371.671875,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "regional",
+          "group": "general",
+          "samples": 960,
+          "candidate_recall": 0.90625,
+          "ndcg_at_10": 0.8004722380908895,
+          "recall_at_100": 0.89375,
+          "all_evidence_at_100": 0.790625,
+          "lexical_rescue_relevant_candidates_mean": 0.09375,
+          "p50_ms": 20.9531,
+          "p95_ms": 39.1383,
+          "regions_expanded_mean": 1.2,
+          "regional_postings_read_mean": 59612.175,
+          "vector_comparisons_mean": 12000.0,
+          "routing_comparisons_mean": 371.671875,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "elasticsearch",
+          "group": "(all queries)",
+          "samples": 960,
+          "candidate_recall": 0.9203125,
+          "ndcg_at_10": 0.7930374999201679,
+          "recall_at_100": 0.9,
+          "all_evidence_at_100": 0.803125,
+          "lexical_rescue_relevant_candidates_mean": 0.0,
+          "p50_ms": 38.3574,
+          "p95_ms": 77.3173,
+          "regions_expanded_mean": 0.0,
+          "regional_postings_read_mean": 0.0,
+          "vector_comparisons_mean": null,
+          "routing_comparisons_mean": 0.0,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "elasticsearch",
+          "group": "general",
+          "samples": 960,
+          "candidate_recall": 0.9203125,
+          "ndcg_at_10": 0.7930374999201679,
+          "recall_at_100": 0.9,
+          "all_evidence_at_100": 0.803125,
+          "lexical_rescue_relevant_candidates_mean": 0.0,
+          "p50_ms": 38.3574,
+          "p95_ms": 77.3173,
+          "regions_expanded_mean": 0.0,
+          "regional_postings_read_mean": 0.0,
+          "vector_comparisons_mean": null,
+          "routing_comparisons_mean": 0.0,
+          "rerank_vector_comparisons_mean": 200.0
+        }
+      ],
+      "frozen_from": "runs/hotpotqa-1m/evaluation/report.json",
+      "global_rescue_budget_hits": 0,
+      "graph_build_ms": 369144.3208,
+      "graph_bytes": 140468039,
+      "note": "Same frozen settings, same Elasticsearch process; Elasticsearch still degraded; 960/960 regional traces identical to the first run"
+    },
+    {
+      "id": "hotpotqa-1m-graph-c12000-fresh-es",
+      "title": "HotpotQA 1M, 12k budget and HNSW candidates (fresh Elasticsearch)",
+      "category": "held-out",
+      "source_report": "runs/hotpotqa-1m/evaluation-graph-c12000-fresh-es/report.json",
+      "source_traces": "runs/hotpotqa-1m/evaluation-graph-c12000-fresh-es/traces.jsonl",
+      "index": {
+        "schema": 2,
+        "embedding": {
+          "model_revision": "CohereLabs/beir-embed-english-v3:hotpotqa-1m:f018922a46a51388348a307ec2fef28019a33026",
+          "dimensions": 1024,
+          "normalization": "l2"
+        },
+        "chunks": 1000000,
+        "regions": 365,
+        "leaf_size": 8192,
+        "average_length": 47.437426
+      },
+      "queries": 320,
+      "repeats": 3,
+      "platform": [
+        "windows",
+        "x86_64"
+      ],
+      "index_bytes": 4973436928,
+      "ingest_ms": null,
+      "index_open_ms": 124020.90269999999,
+      "global_graph_build_ms": null,
+      "regional_cache_prepare_ms": 56257.687099999996,
+      "settings": [
+        {
+          "strategy": "regional",
+          "config": {
+            "limit": 100,
+            "depth": 200,
+            "graph_width": 256,
+            "max_regions": 36,
+            "max_chunks": 12000,
+            "max_postings": 120000,
+            "rescue": 40,
+            "rescue_max_scored": 256000,
+            "regional_rescore": 400,
+            "graph_candidates": 100,
+            "routing_ms": 0,
+            "regional_rerank": {
+              "coverage": 0.08,
+              "cosine": 0.92,
+              "fusion": 0.0
+            }
+          }
+        },
+        {
+          "strategy": "elasticsearch",
+          "config": {
+            "limit": 100,
+            "depth": 200,
+            "graph_width": 256,
+            "max_regions": 12,
+            "max_chunks": 6000,
+            "max_postings": 60000,
+            "rescue": 40,
+            "routing_ms": 0
+          },
+          "elastic": {
+            "analyzer": "standard",
+            "num_candidates": 768
+          }
+        }
+      ],
+      "es": {
+        "version": "8.19.25",
+        "index": "loci-hotpotqa-1m",
+        "documents": 1000000,
+        "active_primary_shards": 1,
+        "index_bytes": 6612138649
+      },
+      "native_settings_source": {
+        "schema": 1,
+        "embedding": {
+          "model_revision": "CohereLabs/beir-embed-english-v3:fiqa:9b862c5f1d023435f71ebeb8f71942a8caf3b90b1b07b14b435e7a31623c2a52",
+          "dimensions": 1024,
+          "normalization": "l2"
+        },
+        "chunks": 57638,
+        "regions": 159,
+        "leaf_size": 1024,
+        "average_length": 138.68425344390857
+      },
+      "paired_quality": {
+        "ndcg_at_10": {
+          "mean": 0.0074347381707214584,
+          "lower_95": -0.01156462599514235,
+          "upper_95": 0.026234014746424145
+        },
+        "recall_at_100": {
+          "mean": -0.00625,
+          "lower_95": -0.0203125,
+          "upper_95": 0.0078125
+        }
+      },
+      "scoring": {
+        "dense": {
+          "mean": 12000.0,
+          "p50": 12000,
+          "p95": 12000,
+          "min": 12000,
+          "max": 12000,
+          "mean_corpus_fraction": 0.012
+        },
+        "global_rescue": {
+          "mean": 494.465625,
+          "p50": 444,
+          "p95": 578,
+          "min": 360,
+          "max": 4453,
+          "mean_corpus_fraction": 0.000494465625
+        },
+        "either": {
+          "mean": 12419.128125,
+          "p50": 12382,
+          "p95": 12554,
+          "min": 12197,
+          "max": 15974,
+          "mean_corpus_fraction": 0.012419128125
+        }
+      },
+      "results": [
+        {
+          "strategy": "regional",
+          "group": "(all queries)",
+          "samples": 960,
+          "candidate_recall": 0.90625,
+          "ndcg_at_10": 0.8004722380908895,
+          "recall_at_100": 0.89375,
+          "all_evidence_at_100": 0.790625,
+          "lexical_rescue_relevant_candidates_mean": 0.09375,
+          "p50_ms": 19.3061,
+          "p95_ms": 31.0116,
+          "regions_expanded_mean": 1.2,
+          "regional_postings_read_mean": 59612.175,
+          "vector_comparisons_mean": 12000.0,
+          "routing_comparisons_mean": 371.671875,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "regional",
+          "group": "general",
+          "samples": 960,
+          "candidate_recall": 0.90625,
+          "ndcg_at_10": 0.8004722380908895,
+          "recall_at_100": 0.89375,
+          "all_evidence_at_100": 0.790625,
+          "lexical_rescue_relevant_candidates_mean": 0.09375,
+          "p50_ms": 19.3061,
+          "p95_ms": 31.0116,
+          "regions_expanded_mean": 1.2,
+          "regional_postings_read_mean": 59612.175,
+          "vector_comparisons_mean": 12000.0,
+          "routing_comparisons_mean": 371.671875,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "elasticsearch",
+          "group": "(all queries)",
+          "samples": 960,
+          "candidate_recall": 0.9203125,
+          "ndcg_at_10": 0.7930374999201679,
+          "recall_at_100": 0.9,
+          "all_evidence_at_100": 0.803125,
+          "lexical_rescue_relevant_candidates_mean": 0.0,
+          "p50_ms": 27.453100000000003,
+          "p95_ms": 41.202000000000005,
+          "regions_expanded_mean": 0.0,
+          "regional_postings_read_mean": 0.0,
+          "vector_comparisons_mean": null,
+          "routing_comparisons_mean": 0.0,
+          "rerank_vector_comparisons_mean": 200.0
+        },
+        {
+          "strategy": "elasticsearch",
+          "group": "general",
+          "samples": 960,
+          "candidate_recall": 0.9203125,
+          "ndcg_at_10": 0.7930374999201679,
+          "recall_at_100": 0.9,
+          "all_evidence_at_100": 0.803125,
+          "lexical_rescue_relevant_candidates_mean": 0.0,
+          "p50_ms": 27.453100000000003,
+          "p95_ms": 41.202000000000005,
+          "regions_expanded_mean": 0.0,
+          "regional_postings_read_mean": 0.0,
+          "vector_comparisons_mean": null,
+          "routing_comparisons_mean": 0.0,
+          "rerank_vector_comparisons_mean": 200.0
+        }
+      ],
+      "frozen_from": "runs/hotpotqa-1m/evaluation/report.json",
+      "global_rescue_budget_hits": 0,
+      "graph_build_ms": 369144.3208,
+      "graph_bytes": 140468039,
+      "note": "Elasticsearch restarted before the run; cleanest comparison of the three"
     }
   ],
   "development_profiles": [
@@ -5019,6 +5625,406 @@
           "mean_ms": 35.04788120000001,
           "p50_ms": 33.817600000000006,
           "p95_ms": 46.6124
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m graph-100-scratch (maxscore, int8 400, 100 graph candidates)",
+      "source": "runs/hotpotqa-1m/profile-graph-100-scratch.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 36,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "graph_candidates": 100,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 38728.4681,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 5.2756588,
+          "p50_ms": 3.8984,
+          "p95_ms": 14.3431
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.18889280000000006,
+          "p50_ms": 0.184,
+          "p95_ms": 0.2413
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 10.107485599999997,
+          "p50_ms": 10.114899999999999,
+          "p95_ms": 11.687100000000001
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 4.739088800000001,
+          "p50_ms": 4.5582,
+          "p95_ms": 7.705
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.3040036,
+          "p50_ms": 0.3001,
+          "p95_ms": 0.4247
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 2.493744800000001,
+          "p50_ms": 2.3707,
+          "p95_ms": 3.7354
+        },
+        {
+          "phase": "global_graph",
+          "mean_ms": 3.5598867999999997,
+          "p50_ms": 3.6221,
+          "p95_ms": 4.4775
+        },
+        {
+          "phase": "other",
+          "mean_ms": 1.5103604,
+          "p50_ms": 1.3862999999999985,
+          "p95_ms": 2.475900000000003
+        },
+        {
+          "phase": "total",
+          "mean_ms": 28.179121600000016,
+          "p50_ms": 26.8533,
+          "p95_ms": 41.5432
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m graph-c24000-w128 (maxscore, int8 400, 100 graph candidates)",
+      "source": "runs/hotpotqa-1m/profile-graph-c24000-w128.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 128,
+        "max_regions": 36,
+        "max_chunks": 24000,
+        "max_postings": 240000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "graph_candidates": 100,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 29266.9271,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 6.411252799999997,
+          "p50_ms": 4.6097,
+          "p95_ms": 16.1036
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.21724279999999987,
+          "p50_ms": 0.20119999999999996,
+          "p95_ms": 0.33860000000000007
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 11.903998400000006,
+          "p50_ms": 10.9065,
+          "p95_ms": 19.8385
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 5.98623,
+          "p50_ms": 5.2664,
+          "p95_ms": 12.681799999999999
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.38787839999999996,
+          "p50_ms": 0.3342,
+          "p95_ms": 0.8484
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 3.1227215999999998,
+          "p50_ms": 2.6475,
+          "p95_ms": 6.8468
+        },
+        {
+          "phase": "global_graph",
+          "mean_ms": 2.4606972000000003,
+          "p50_ms": 2.2169999999999996,
+          "p95_ms": 4.5987
+        },
+        {
+          "phase": "other",
+          "mean_ms": 1.807924000000001,
+          "p50_ms": 1.5331000000000046,
+          "p95_ms": 3.601600000000005
+        },
+        {
+          "phase": "total",
+          "mean_ms": 32.2979452,
+          "p50_ms": 28.1384,
+          "p95_ms": 59.022
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m graph-c12000-w256 (maxscore, int8 400, 100 graph candidates)",
+      "source": "runs/hotpotqa-1m/profile-graph-c12000-w256.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 256,
+        "max_regions": 36,
+        "max_chunks": 12000,
+        "max_postings": 120000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "graph_candidates": 100,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 39529.866,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 6.086621999999997,
+          "p50_ms": 4.4117,
+          "p95_ms": 17.283900000000003
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.1911312,
+          "p50_ms": 0.18370000000000003,
+          "p95_ms": 0.2287
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 5.7534187999999995,
+          "p50_ms": 5.6846,
+          "p95_ms": 6.596500000000001
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 2.4529264,
+          "p50_ms": 2.3475,
+          "p95_ms": 4.109500000000001
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.16917159999999995,
+          "p50_ms": 0.1638,
+          "p95_ms": 0.2252
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 2.7259659999999992,
+          "p50_ms": 2.5164,
+          "p95_ms": 4.2812
+        },
+        {
+          "phase": "global_graph",
+          "mean_ms": 3.806272399999998,
+          "p50_ms": 3.8577,
+          "p95_ms": 5.0159
+        },
+        {
+          "phase": "other",
+          "mean_ms": 1.01233,
+          "p50_ms": 0.8922999999999952,
+          "p95_ms": 1.991300000000006
+        },
+        {
+          "phase": "total",
+          "mean_ms": 22.19783840000001,
+          "p50_ms": 20.091,
+          "p95_ms": 36.8009
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m graph-c12000-w128 (maxscore, int8 400, 100 graph candidates)",
+      "source": "runs/hotpotqa-1m/profile-graph-c12000-w128.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 128,
+        "max_regions": 36,
+        "max_chunks": 12000,
+        "max_postings": 120000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "graph_candidates": 100,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 31165.5432,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 5.0925308000000005,
+          "p50_ms": 3.7401999999999997,
+          "p95_ms": 13.688699999999999
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.1536603999999999,
+          "p50_ms": 0.1528,
+          "p95_ms": 0.1913
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 5.042962400000002,
+          "p50_ms": 5.0253,
+          "p95_ms": 6.0004
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 2.1427756,
+          "p50_ms": 2.0774,
+          "p95_ms": 3.6155
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.14585279999999998,
+          "p50_ms": 0.1416,
+          "p95_ms": 0.1986
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 2.290072000000001,
+          "p50_ms": 2.1851000000000003,
+          "p95_ms": 3.4051
+        },
+        {
+          "phase": "global_graph",
+          "mean_ms": 1.9878524000000013,
+          "p50_ms": 2.0051,
+          "p95_ms": 2.6032
+        },
+        {
+          "phase": "other",
+          "mean_ms": 0.9141447999999995,
+          "p50_ms": 0.8256999999999994,
+          "p95_ms": 1.7982999999999976
+        },
+        {
+          "phase": "total",
+          "mean_ms": 17.769851200000005,
+          "p50_ms": 16.3192,
+          "p95_ms": 29.881700000000002
+        }
+      ]
+    },
+    {
+      "phase": "hotpotqa-1m graph-c8000-w128 (maxscore, int8 400, 100 graph candidates)",
+      "source": "runs/hotpotqa-1m/profile-graph-c8000-w128.json",
+      "queries": 250,
+      "config": {
+        "limit": 100,
+        "depth": 200,
+        "graph_width": 128,
+        "max_regions": 36,
+        "max_chunks": 8000,
+        "max_postings": 80000,
+        "rescue": 40,
+        "rescue_max_scored": 256000,
+        "regional_rescore": 400,
+        "graph_candidates": 100,
+        "routing_ms": 0,
+        "regional_rerank": {
+          "coverage": 0.08,
+          "cosine": 0.92,
+          "fusion": 0.0
+        }
+      },
+      "preparation_ms": 29497.1506,
+      "phases": [
+        {
+          "phase": "global_lexical_rescue",
+          "mean_ms": 7.7791472000000015,
+          "p50_ms": 5.2813,
+          "p95_ms": 22.3984
+        },
+        {
+          "phase": "routing",
+          "mean_ms": 0.24862879999999996,
+          "p50_ms": 0.2097,
+          "p95_ms": 0.436
+        },
+        {
+          "phase": "vectors_and_memberships",
+          "mean_ms": 5.085326800000003,
+          "p50_ms": 4.5672999999999995,
+          "p95_ms": 9.061800000000002
+        },
+        {
+          "phase": "regional_postings",
+          "mean_ms": 2.5805472,
+          "p50_ms": 2.3828,
+          "p95_ms": 4.824
+        },
+        {
+          "phase": "regional_top_k",
+          "mean_ms": 0.18150640000000012,
+          "p50_ms": 0.1358,
+          "p95_ms": 0.325
+        },
+        {
+          "phase": "rerank_and_hits",
+          "mean_ms": 3.7758824,
+          "p50_ms": 3.1744999999999997,
+          "p95_ms": 7.5779000000000005
+        },
+        {
+          "phase": "global_graph",
+          "mean_ms": 2.787745600000001,
+          "p50_ms": 2.5891,
+          "p95_ms": 4.4111
+        },
+        {
+          "phase": "other",
+          "mean_ms": 0.5481944000000006,
+          "p50_ms": 0.46670000000000655,
+          "p95_ms": 1.0578000000000003
+        },
+        {
+          "phase": "total",
+          "mean_ms": 22.986978799999996,
+          "p50_ms": 19.4863,
+          "p95_ms": 43.2225
         }
       ]
     }

@@ -1,6 +1,8 @@
 # Loci Search
 
 [![CI](https://github.com/AncientiCe/loci-search/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AncientiCe/loci-search/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/loci-search.svg)](https://crates.io/crates/loci-search)
+[![docs.rs](https://img.shields.io/docsrs/loci-search)](https://docs.rs/loci-search)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: research preview](https://img.shields.io/badge/status-research%20preview-lightgrey.svg)
@@ -55,7 +57,7 @@ Run `cargo run --locked -- --help` to see all commands, or follow [Use your own 
 ## Install
 
 - **Prebuilt binaries:** Windows and Linux x86-64 archives with SHA-256 checksums are attached to each [GitHub release](https://github.com/AncientiCe/loci-search/releases).
-- **From crates.io:** `cargo install loci-search --locked` once a version is published.
+- **From crates.io:** `cargo install loci-search --locked`
 - **From this checkout:** `cargo install --path . --locked --bin loci`
 
 The installed binary is named `loci`.

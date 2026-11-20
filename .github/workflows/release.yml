@@ -179,7 +179,9 @@ jobs:
       - run: rustup toolchain install 1.95.0 --profile minimal
       - run: cargo +1.95.0 test --locked
       - run: cargo +1.95.0 publish --dry-run --locked
-      - run: cargo +1.95.0 install cargo-audit --version 0.22.1 --locked --no-default-features
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: cargo-audit@0.22.1
       - run: cargo audit --deny warnings
 
   draft:

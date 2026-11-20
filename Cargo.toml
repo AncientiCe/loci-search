@@ -15,6 +15,7 @@ include = [
     "/tests/**",
     "/tools/*.py",
     "/docs/images/*.png",
+    "/docs/images/*.svg",
     "/docs/releasing.md",
     "/benchmarks/*.md",
     "/benchmarks/*.json",

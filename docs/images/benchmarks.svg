@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 410" width="960" height="410" role="img" aria-labelledby="title desc">
+<title id="title">Loci regional search compared with Elasticsearch</title>
+<desc id="desc">Held-out Recall@100 and warm p95 latency. HotpotQA 1M: Loci 89.38% at 31.01 ms, Elasticsearch 90.00% at 41.20 ms. FiQA: Loci 73.64% at 14.33 ms, Elasticsearch 64.98% at 21.21 ms. NFCorpus: Loci 35.41% at 1.85 ms, Elasticsearch 32.99% at 20.70 ms.</desc>
+<style>
+  svg { --bg:#fcfcfb; --t1:#0b0b0b; --t2:#52514e; --t3:#77766f; --grid:#e4e3df; --s1:#2a78d6; --s2:#eb6834; }
+  @media (prefers-color-scheme: dark) {
+    svg { --bg:#1a1a19; --t1:#f0efec; --t2:#c3c2b7; --t3:#9a998f; --grid:#363633; --s1:#3987e5; --s2:#d95926; }
+  }
+  text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .bg { fill: var(--bg); }
+  .t1 { fill: var(--t1); } .t2 { fill: var(--t2); } .t3 { fill: var(--t3); }
+  .s1 { fill: var(--s1); } .s2 { fill: var(--s2); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .ttl { font-size: 20px; font-weight: 600; }
+  .h { font-size: 14px; font-weight: 600; }
+  .d { font-size: 15px; font-weight: 600; }
+  .s { font-size: 12px; }
+  .v { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .lg { font-size: 13px; }
+</style>
+<rect class="bg" width="960" height="410" rx="12"/>
+<text class="t1 ttl" x="28" y="40">Held-out retrieval quality and warm latency</text>
+<rect class="s1" x="28" y="56" width="12" height="12" rx="3"/>
+<text class="t2 lg" x="46" y="67">Loci regional</text>
+<rect class="s2" x="166.2" y="56" width="12" height="12" rx="3"/>
+<text class="t2 lg" x="184.2" y="67">Elasticsearch</text>
+<text class="t1 d" x="28" y="142">HotpotQA</text>
+<text class="t3 s" x="28" y="161">1M passages</text>
+<text class="t1 d" x="28" y="220">FiQA</text>
+<text class="t3 s" x="28" y="239">57.6K passages</text>
+<text class="t1 d" x="28" y="298">NFCorpus</text>
+<text class="t3 s" x="28" y="317">3.6K passages</text>
+<text class="t2 h" x="178" y="100">Recall@100 (higher is better)</text>
+<line class="grid" x1="178.0" y1="116" x2="178.0" y2="344"/>
+<text class="t3 s" x="178.0" y="362" text-anchor="middle">0%</text>
+<line class="grid" x1="253.0" y1="116" x2="253.0" y2="344"/>
+<text class="t3 s" x="253.0" y="362" text-anchor="middle">25%</text>
+<line class="grid" x1="328.0" y1="116" x2="328.0" y2="344"/>
+<text class="t3 s" x="328.0" y="362" text-anchor="middle">50%</text>
+<line class="grid" x1="403.0" y1="116" x2="403.0" y2="344"/>
+<text class="t3 s" x="403.0" y="362" text-anchor="middle">75%</text>
+<line class="grid" x1="478.0" y1="116" x2="478.0" y2="344"/>
+<text class="t3 s" x="478.0" y="362" text-anchor="middle">100%</text>
+<path class="s1" d="M178.0,124.0 H442.1 Q446.1,124.0 446.1,128.0 V142.0 Q446.1,146.0 442.1,146.0 H178.0 Z"/>
+<text class="t1 v" x="452.1" y="140.0">89.4%</text>
+<path class="s2" d="M178.0,148.0 H444.0 Q448.0,148.0 448.0,152.0 V166.0 Q448.0,170.0 444.0,170.0 H178.0 Z"/>
+<text class="t1 v" x="454.0" y="164.0">90.0%</text>
+<path class="s1" d="M178.0,202.0 H394.9 Q398.9,202.0 398.9,206.0 V220.0 Q398.9,224.0 394.9,224.0 H178.0 Z"/>
+<text class="t1 v" x="404.9" y="218.0">73.6%</text>
+<path class="s2" d="M178.0,226.0 H368.9 Q372.9,226.0 372.9,230.0 V244.0 Q372.9,248.0 368.9,248.0 H178.0 Z"/>
+<text class="t1 v" x="378.9" y="242.0">65.0%</text>
+<path class="s1" d="M178.0,280.0 H280.2 Q284.2,280.0 284.2,284.0 V298.0 Q284.2,302.0 280.2,302.0 H178.0 Z"/>
+<text class="t1 v" x="290.2" y="296.0">35.4%</text>
+<path class="s2" d="M178.0,304.0 H273.0 Q277.0,304.0 277.0,308.0 V322.0 Q277.0,326.0 273.0,326.0 H178.0 Z"/>
+<text class="t1 v" x="283.0" y="320.0">33.0%</text>
+<text class="t2 h" x="568" y="100">Warm p95 latency (lower is better)</text>
+<line class="grid" x1="568.0" y1="116" x2="568.0" y2="344"/>
+<text class="t3 s" x="568.0" y="362" text-anchor="middle">0 ms</text>
+<line class="grid" x1="668.0" y1="116" x2="668.0" y2="344"/>
+<text class="t3 s" x="668.0" y="362" text-anchor="middle">15 ms</text>
+<line class="grid" x1="768.0" y1="116" x2="768.0" y2="344"/>
+<text class="t3 s" x="768.0" y="362" text-anchor="middle">30 ms</text>
+<line class="grid" x1="868.0" y1="116" x2="868.0" y2="344"/>
+<text class="t3 s" x="868.0" y="362" text-anchor="middle">45 ms</text>
+<path class="s1" d="M568.0,124.0 H770.7 Q774.7,124.0 774.7,128.0 V142.0 Q774.7,146.0 770.7,146.0 H568.0 Z"/>
+<text class="t1 v" x="780.7" y="140.0">31.0 ms</text>
+<path class="s2" d="M568.0,148.0 H838.7 Q842.7,148.0 842.7,152.0 V166.0 Q842.7,170.0 838.7,170.0 H568.0 Z"/>
+<text class="t1 v" x="848.7" y="164.0">41.2 ms</text>
+<path class="s1" d="M568.0,202.0 H659.5 Q663.5,202.0 663.5,206.0 V220.0 Q663.5,224.0 659.5,224.0 H568.0 Z"/>
+<text class="t1 v" x="669.5" y="218.0">14.3 ms</text>
+<path class="s2" d="M568.0,226.0 H705.4 Q709.4,226.0 709.4,230.0 V244.0 Q709.4,248.0 705.4,248.0 H568.0 Z"/>
+<text class="t1 v" x="715.4" y="242.0">21.2 ms</text>
+<path class="s1" d="M568.0,280.0 H576.3 Q580.3,280.0 580.3,284.0 V298.0 Q580.3,302.0 576.3,302.0 H568.0 Z"/>
+<text class="t1 v" x="586.3" y="296.0">1.9 ms</text>
+<path class="s2" d="M568.0,304.0 H702.0 Q706.0,304.0 706.0,308.0 V322.0 Q706.0,326.0 702.0,326.0 H568.0 Z"/>
+<text class="t1 v" x="712.0" y="320.0">20.7 ms</text>
+<text class="t3 s" x="28" y="394">Recorded single-machine sequential runs. Methods, settings, and confidence intervals: benchmarks/README.md</text>
+</svg>

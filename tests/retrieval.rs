@@ -163,7 +163,12 @@ fn graph_candidates_add_nearest_passages_outside_the_routing_budget() -> anyhow:
     let after = engine.search(query, Strategy::Regional, &with_graph)?;
     assert!(before.hits.iter().all(|hit| hit.graph_rank.is_none()));
     assert!(after.hits.iter().any(|hit| hit.graph_rank.is_some()));
-    assert!(after.work.graph_vector_comparisons.is_some_and(|count| count > 0));
+    assert!(
+        after
+            .work
+            .graph_vector_comparisons
+            .is_some_and(|count| count > 0)
+    );
     assert!(after.candidates.len() > before.candidates.len());
     // The regional budget still bounds the routed scan.
     assert!(after.work.regional_chunks_scored <= starved.max_chunks);
@@ -173,7 +178,11 @@ fn graph_candidates_add_nearest_passages_outside_the_routing_budget() -> anyhow:
     let mut reopened = Engine::open(&db)?;
     let again = reopened.search(query, Strategy::Regional, &with_graph)?;
     let ids = |result: &SearchResult| {
-        result.hits.iter().map(|hit| hit.source.id.clone()).collect::<Vec<_>>()
+        result
+            .hits
+            .iter()
+            .map(|hit| hit.source.id.clone())
+            .collect::<Vec<_>>()
     };
     assert_eq!(ids(&again), ids(&after));
     Ok(())

@@ -139,7 +139,8 @@ impl Graph {
         }
         let mut plan = vec![Vec::new(); level.min(top) + 1];
         for layer in (0..=level.min(top)).rev() {
-            let neighbors = self.layer(cursor, layer, BUILD_WIDTH, vectors, query, &mut comparisons);
+            let neighbors =
+                self.layer(cursor, layer, BUILD_WIDTH, vectors, query, &mut comparisons);
             cursor = neighbors[0].id;
             let degree = if layer == 0 { 2 * DEGREE } else { DEGREE };
             plan[layer] = diversify(neighbors, degree, vectors);
@@ -184,7 +185,11 @@ impl Graph {
         let mut input = BufReader::new(file);
         let mut magic = [0; 8];
         input.read_exact(&mut magic)?;
-        ensure!(&magic == FILE_MAGIC, "{} is not a Loci graph", path.display());
+        ensure!(
+            &magic == FILE_MAGIC,
+            "{} is not a Loci graph",
+            path.display()
+        );
         if u32::from_le_bytes(read_array(&mut input)?) != FILE_VERSION {
             return Ok(None);
         }
@@ -196,7 +201,9 @@ impl Graph {
         }
         let nodes = usize::try_from(u64::from_le_bytes(read_array(&mut input)?))?;
         let entry = u64::from_le_bytes(read_array(&mut input)?);
-        let entry = (entry != u64::MAX).then(|| usize::try_from(entry)).transpose()?;
+        let entry = (entry != u64::MAX)
+            .then(|| usize::try_from(entry))
+            .transpose()?;
         let mut links = Vec::with_capacity(nodes);
         for _ in 0..nodes {
             let [layers] = read_array::<1>(&mut input)?;

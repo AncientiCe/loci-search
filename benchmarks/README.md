@@ -1,6 +1,6 @@
 # Benchmark history
 
-The latency columns summarize all recorded warm sequential queries. The [machine-readable history](history.json) includes per-pass timings, dev trials, index preparation, and exact settings. See the [reproduction instructions](../README.md) for the corpus and launch steps.
+The latency columns summarize all recorded warm sequential queries. The [machine-readable history](history.json) includes per-pass timings, dev trials, index preparation, and exact settings. See the [reproduction instructions](reproduce.md) for the corpus and launch steps.
 
 ## Query latency and recall
 

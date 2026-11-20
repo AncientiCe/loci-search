@@ -17,7 +17,9 @@ impl Quantized {
         let mut codes = Vec::with_capacity(vectors.len() * dimensions);
         let mut scales = Vec::with_capacity(vectors.len());
         for vector in vectors {
-            let largest = vector.iter().fold(0.0_f32, |max, value| max.max(value.abs()));
+            let largest = vector
+                .iter()
+                .fold(0.0_f32, |max, value| max.max(value.abs()));
             let scale = largest / 127.0;
             let inverse = if scale > 0.0 { scale.recip() } else { 0.0 };
             codes.extend(

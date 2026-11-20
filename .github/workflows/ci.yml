@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            executable: loci
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable: loci.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TARGET: ${{ matrix.target }}
+      EXECUTABLE: ${{ matrix.executable }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target $env:TARGET
+      - name: Check formatting
+        run: cargo +1.95.0 fmt --check
+      - name: Lint
+        run: cargo +1.95.0 clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo +1.95.0 test --locked
+      - name: Build the release binary
+        run: cargo +1.95.0 build --locked --release --target $env:TARGET
+      - name: Smoke-test and package the release binary
+        run: |
+          & "./target/$env:TARGET/release/$env:EXECUTABLE" bench --fixture --chunks 128 --repeats 1 --out runs/ci-smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/release.py package --target $env:TARGET --output dist
+  package:
+    name: Package and audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: python3 .github/scripts/release.py notes --output "$RUNNER_TEMP/release-notes.md"
+      - run: cargo +1.95.0 publish --dry-run --locked
+      - run: cargo +1.95.0 install cargo-audit --version 0.22.1 --locked --no-default-features
+      - run: cargo audit --deny warnings
+  gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    needs: [checks, package]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Require all checks
+        env:
+          TESTS: ${{ needs.checks.result }}
+          PACKAGE: ${{ needs.package.result }}
+        run: test "$TESTS" = success && test "$PACKAGE" = success

@@ -325,15 +325,13 @@ pub(crate) fn select(
         .flatten();
     let expired = || deadline.is_some_and(|limit| Instant::now() >= limit);
     let timer = Timer::start(profile, "routing");
-    let mut router = engine
-        .topology
-        .router(
-            vector,
-            &engine.vectors,
-            &engine.ids,
-            deadline,
-            config.routing_entries.unwrap_or(DEFAULT_ROUTING_ENTRIES),
-        );
+    let mut router = engine.topology.router(
+        vector,
+        &engine.vectors,
+        &engine.ids,
+        deadline,
+        config.routing_entries.unwrap_or(DEFAULT_ROUTING_ENTRIES),
+    );
     timer.finish(profile);
     let stop_reason = 'routing: loop {
         if expired() {
@@ -425,7 +423,12 @@ pub(crate) fn select(
     // Every scanned passage is in `nearest` until the cuts below; record and reset.
     routes.first_visit = nearest
         .iter()
-        .map(|hit| (hit.id, std::mem::replace(&mut first_visit[hit.id], UNVISITED)))
+        .map(|hit| {
+            (
+                hit.id,
+                std::mem::replace(&mut first_visit[hit.id], UNVISITED),
+            )
+        })
         .collect();
     routes.first_visit.sort_unstable();
     if let Some(rescore) = config.regional_rescore {
@@ -537,20 +540,29 @@ mod tests {
         let (embedding, mut corpus, _) = fixture::generate(128)?;
         corpus.sort_unstable_by(|a, b| a.id.cmp(&b.id));
         for (id, passage) in corpus.iter_mut().enumerate() {
-            passage.text = if id == 0 { "common distinctive" } else { "common" }.into();
+            passage.text = if id == 0 {
+                "common distinctive"
+            } else {
+                "common"
+            }
+            .into();
             passage.end = passage.text.len() as u64;
         }
         index::ingest(&db, corpus, embedding, 16)?;
         let mut engine = Engine::open(&db)?;
         engine.prepare_regional()?;
         let selective = terms("common distinctive").collect::<BTreeSet<_>>();
-        let result = engine.regional_index().rescue(&engine, &selective, 1, Some(1))?;
+        let result = engine
+            .regional_index()
+            .rescue(&engine, &selective, 1, Some(1))?;
         assert_eq!(result.ranked, engine.lexical(&selective, 1)?);
         assert_eq!(result.scores.unwrap().count, 1);
         assert!(!result.budget_hit);
 
         let common = terms("common").collect::<BTreeSet<_>>();
-        let capped = engine.regional_index().rescue(&engine, &common, 1, Some(1))?;
+        let capped = engine
+            .regional_index()
+            .rescue(&engine, &common, 1, Some(1))?;
         assert_eq!(capped.scores.unwrap().count, 1);
         assert!(capped.budget_hit);
         Ok(())

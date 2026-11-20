@@ -1,0 +1,203 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable Cargo version, such as 0.1.0
+        required: true
+        type: string
+      mode:
+        description: Action to take
+        required: true
+        type: choice
+        default: check
+        options: [check, draft, publish-crate]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      tag: ${{ steps.source.outputs.tag }}
+      tag_object: ${{ steps.source.outputs.tag_object }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release source
+        id: source
+        env:
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ inputs.version }}
+          PRIVATE: ${{ github.event.repository.private }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$ ]]; then
+            echo 'Version must have the form X.Y.Z' >&2
+            exit 1
+          fi
+
+          tag="v$VERSION"
+          sha="$GITHUB_SHA"
+          tag_object=
+          case "$MODE" in
+            check) ;;
+            draft|publish-crate)
+              if [[ "$GITHUB_REPOSITORY" != AncientiCe/loci-search ||
+                    "$GITHUB_REF" != refs/heads/main || "$PRIVATE" != false ]]; then
+                echo 'Release writes require the public repository and a dispatch from main' >&2
+                exit 1
+              fi
+              ref="refs/tags/$tag"
+              tag_object=$(git rev-parse --verify "$ref")
+              test "$(git cat-file -t "$tag_object")" = tag
+              sha=$(git rev-parse --verify "$ref^{commit}")
+              git merge-base --is-ancestor "$sha" "$GITHUB_SHA"
+              if [[ "$MODE" == publish-crate ]]; then
+                gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease \
+                  --jq 'select((.isDraft or .isPrerelease) | not) | "published"' | grep -qx published
+              fi
+              git switch --detach "$sha"
+              ;;
+            *) exit 1 ;;
+          esac
+
+          python3 .github/scripts/release.py notes --version "$VERSION" --output release-notes.md
+          {
+            echo "sha=$sha"
+            echo "tag=$tag"
+            echo "tag_object=$tag_object"
+          } >> "$GITHUB_OUTPUT"
+      - if: inputs.mode == 'draft'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  binaries:
+    if: inputs.mode != 'publish-crate'
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            executable: loci
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable: loci.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TARGET: ${{ matrix.target }}
+      EXECUTABLE: ${{ matrix.executable }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal --target $env:TARGET
+      - run: cargo +1.95.0 test --locked --target $env:TARGET
+      - run: cargo +1.95.0 build --locked --release --target $env:TARGET
+      - name: Smoke-test and package the release binary
+        run: |
+          & "./target/$env:TARGET/release/$env:EXECUTABLE" bench --fixture --chunks 128 --repeats 1 --out runs/release-smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/release.py package --version $env:VERSION --target $env:TARGET --output dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundle-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-crate:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: cargo +1.95.0 test --locked
+      - run: cargo +1.95.0 publish --dry-run --locked
+      - run: cargo +1.95.0 install cargo-audit --version 0.22.1 --locked --no-default-features
+      - run: cargo audit --deny warnings
+
+  draft:
+    if: inputs.mode == 'draft'
+    needs: [prepare, binaries, verify-crate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: dist
+      - name: Create draft from the tagged changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$TAG_OBJECT"
+          (cd dist && sha256sum --check -- *.sha256)
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --title "Loci Search $TAG" --notes-file release-notes.md
+
+  publish-crate:
+    if: inputs.mode == 'publish-crate'
+    needs: [prepare, verify-crate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Recheck the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$TAG_OBJECT"
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+      - name: Publish the verified crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo +1.95.0 publish --locked --no-verify

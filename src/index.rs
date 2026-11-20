@@ -345,7 +345,10 @@ impl Engine {
                     graph
                 }
             };
-            ensure!(graph.len() == self.ids.len(), "graph size differs from the index");
+            ensure!(
+                graph.len() == self.ids.len(),
+                "graph size differs from the index"
+            );
             self.dense_graph = Some(graph);
         }
         Ok(())

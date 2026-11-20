@@ -1,0 +1,36 @@
+name: Bug report
+description: Report incorrect results, a crash, or a build failure
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please reproduce with synthetic input where possible. Keep private documents, credentials, and query traces out of the report.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands you ran. `loci fixture` can generate shareable input.
+      render: sh
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: 0.1.0 or a commit SHA
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Windows 11 x86-64, Rust 1.95.0
+    validations:
+      required: true

@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
     paths:
       - .github/workflows/release.yml
       - .github/scripts/release.py
@@ -27,7 +28,7 @@ defaults:
     shell: bash
 
 concurrency:
-  group: ${{ contains(fromJSON('["draft","publish-crate"]'), inputs.mode) && 'release-write' || format('release-check-{0}', github.ref) }}
+  group: ${{ (startsWith(github.ref, 'refs/tags/v') || contains(fromJSON('["draft","publish-crate"]'), inputs.mode)) && 'release-write' || format('release-check-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -39,6 +40,7 @@ jobs:
       tag: ${{ steps.source.outputs.tag }}
       tag_object: ${{ steps.source.outputs.tag_object }}
       version: ${{ steps.source.outputs.version }}
+      mode: ${{ steps.source.outputs.mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,7 +52,7 @@ jobs:
       - name: Verify release source
         id: source
         env:
-          MODE: ${{ inputs.mode || 'check' }}
+          MODE: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || inputs.mode || 'check' }}
           VERSION: ${{ inputs.version }}
           PRIVATE: ${{ github.event.repository.private }}
           GH_TOKEN: ${{ github.token }}
@@ -69,6 +71,20 @@ jobs:
           tag_object=
           case "$MODE" in
             check) ;;
+            release)
+              # A pushed vX.Y.Z tag publishes the release with the matching CHANGELOG.md section.
+              if [[ "$GITHUB_REPOSITORY" != AncientiCe/loci-search ||
+                    "$GITHUB_REF" != "refs/tags/$tag" || "$PRIVATE" != false ]]; then
+                echo "Tag $GITHUB_REF does not match Cargo.toml version $VERSION in the public repository" >&2
+                exit 1
+              fi
+              tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq 'select(.object.type == "tag") | .object.sha')
+              if [[ -z "$tag_object" ]]; then
+                echo "Release tags must be annotated" >&2
+                exit 1
+              fi
+              git merge-base --is-ancestor "$sha" origin/main
+              ;;
             draft|publish-crate)
               if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ||
                     "$GITHUB_REPOSITORY" != AncientiCe/loci-search ||
@@ -96,8 +112,9 @@ jobs:
             echo "tag=$tag"
             echo "tag_object=$tag_object"
             echo "version=$VERSION"
+            echo "mode=$MODE"
           } >> "$GITHUB_OUTPUT"
-      - if: inputs.mode == 'draft'
+      - if: steps.source.outputs.mode == 'draft' || steps.source.outputs.mode == 'release'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
@@ -166,7 +183,7 @@ jobs:
       - run: cargo audit --deny warnings
 
   draft:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'draft'
+    if: needs.prepare.outputs.mode == 'draft' || needs.prepare.outputs.mode == 'release'
     needs: [prepare, binaries, verify-crate]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -181,16 +198,19 @@ jobs:
           pattern: bundle-*
           merge-multiple: true
           path: dist
-      - name: Create draft from the tagged changelog
+      - name: Create the release from the tagged changelog
         env:
           GH_TOKEN: ${{ github.token }}
+          MODE: ${{ needs.prepare.outputs.mode }}
           TAG: ${{ needs.prepare.outputs.tag }}
           TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
         run: |
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$TAG_OBJECT"
           (cd dist && sha256sum --check -- *.sha256)
+          draft=()
+          if [[ "$MODE" == draft ]]; then draft=(--draft); fi
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --draft --title "Loci Search $TAG" --notes-file release-notes.md
+            --verify-tag "${draft[@]}" --title "Loci Search $TAG" --notes-file release-notes.md
 
   publish-crate:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish-crate'

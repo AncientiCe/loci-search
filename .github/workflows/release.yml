@@ -1,6 +1,11 @@
 name: Release
 
 on:
+  push:
+    branches: ["**"]
+    paths:
+      - .github/workflows/release.yml
+      - .github/scripts/release.py
   workflow_dispatch:
     inputs:
       version:
@@ -22,7 +27,7 @@ defaults:
     shell: bash
 
 concurrency:
-  group: release-${{ github.repository }}
+  group: ${{ contains(fromJSON('["draft","publish-crate"]'), inputs.mode) && 'release-write' || format('release-check-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +38,7 @@ jobs:
       sha: ${{ steps.source.outputs.sha }}
       tag: ${{ steps.source.outputs.tag }}
       tag_object: ${{ steps.source.outputs.tag_object }}
+      version: ${{ steps.source.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,11 +50,15 @@ jobs:
       - name: Verify release source
         id: source
         env:
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ inputs.mode || 'check' }}
           VERSION: ${{ inputs.version }}
           PRIVATE: ${{ github.event.repository.private }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          fi
+
           if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$ ]]; then
             echo 'Version must have the form X.Y.Z' >&2
             exit 1
@@ -60,7 +70,8 @@ jobs:
           case "$MODE" in
             check) ;;
             draft|publish-crate)
-              if [[ "$GITHUB_REPOSITORY" != AncientiCe/loci-search ||
+              if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ||
+                    "$GITHUB_REPOSITORY" != AncientiCe/loci-search ||
                     "$GITHUB_REF" != refs/heads/main || "$PRIVATE" != false ]]; then
                 echo 'Release writes require the public repository and a dispatch from main' >&2
                 exit 1
@@ -84,6 +95,7 @@ jobs:
             echo "sha=$sha"
             echo "tag=$tag"
             echo "tag_object=$tag_object"
+            echo "version=$VERSION"
           } >> "$GITHUB_OUTPUT"
       - if: inputs.mode == 'draft'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -114,7 +126,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       EXECUTABLE: ${{ matrix.executable }}
-      VERSION: ${{ inputs.version }}
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,7 +166,7 @@ jobs:
       - run: cargo audit --deny warnings
 
   draft:
-    if: inputs.mode == 'draft'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'draft'
     needs: [prepare, binaries, verify-crate]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -181,7 +193,7 @@ jobs:
             --verify-tag --draft --title "Loci Search $TAG" --notes-file release-notes.md
 
   publish-crate:
-    if: inputs.mode == 'publish-crate'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish-crate'
     needs: [prepare, verify-crate]
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -2,7 +2,7 @@
 
 ## First release
 
-The planned first tag is `v0.1.0`. Wait for the release preparation to land on `main` and for the **CI gate** on that commit to pass. Run **Release** from `main` with version `0.1.0` and mode **check**. This mode can run while the repository is private. It tests the release binaries and crate package without creating a tag, release, or crate.
+The planned first tag is `v0.1.0`. Wait for the release preparation to land on `main` and for the **CI gate** on that commit to pass. Run **Release** from `main` with version `0.1.0` and mode **check**. This mode can run while the repository is private. It tests the release binaries and crate package without creating a tag, release, or crate. Changes pushed to the release tools also trigger this check automatically.
 
 At public launch, upload [the 1280 × 640 social preview](images/loci-search.png) in GitHub repository settings and enable private vulnerability reporting. Verify that the branch ruleset still requires a pull request and the **CI gate** status check and blocks force pushes and deletion on `main`. Verify that `v*` tags are protected against updates and deletion and that immutable releases are enabled.
 

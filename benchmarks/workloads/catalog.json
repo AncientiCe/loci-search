@@ -1,0 +1,18 @@
+{
+  "workload":"catalog",
+  "version":1,
+  "documents":[
+    {"id":"p1","sku":"LMP-201","name":"Rechargeable camping lantern","category":"lighting","stock":3,"price_cents":3000},
+    {"id":"p2","sku":"LMP-210","name":"Pocket hiking torch","category":"lighting","stock":1,"price_cents":2000},
+    {"id":"p3","sku":"LMP-202","name":"Storm lantern","category":"lighting","stock":0,"price_cents":1500},
+    {"id":"p4","sku":"BAG-001","name":"Dry bag","category":"packs","stock":2,"price_cents":2000}
+  ],
+  "steps":[
+    {"id":"exact-sku","search":{"text":"LMP-201","k":1},"judged":{"p1":null}},
+    {"id":"typo","search":{"text":"rechageable campng lantarn","k":2},"judged":{"p1":null}},
+    {"id":"available","select":{"filter":{"stock":{"gte":1}},"sort":"price_cents","facet":"category"},"expect":{"ids":["p2","p4","p1"],"count":3,"facets":{"lighting":2,"packs":1}}},
+    {"patch":{"id":"p1","stock":0}},
+    {"patch":{"id":"p3","stock":8,"price_cents":900}},
+    {"id":"updated","select":{"filter":{"stock":{"gte":1}},"sort":"price_cents","facet":"category"},"expect":{"ids":["p3","p2","p4"],"count":3,"facets":{"lighting":2,"packs":1}}}
+  ]
+}

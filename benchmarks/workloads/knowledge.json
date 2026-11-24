@@ -1,0 +1,15 @@
+{
+  "workload": "knowledge",
+  "version": 1,
+  "documents": [
+    {"id":"manual","revision":"r2","uri":"manual/recovery.md","section":"Recovery","text":"After replacing a machine, restore the encrypted vault from its backup."},
+    {"id":"release","revision":"v2.4","uri":"releases/2.4.md","section":"Release notes","text":"Version 2.4 requires the original recovery key before a vault can be restored."},
+    {"id":"misc","revision":"r7","uri":"tickets/138.md","section":"Billing","text":"The restore dialog reports VLC-019 when the recovery key is missing."},
+    {"id":"invoice","revision":"r1","uri":"manual/finance.md","section":"Billing","text":"Download an invoice from the payment settings panel."}
+  ],
+  "steps": [
+    {"id":"paraphrase","search":{"text":"How do I get my private data back on a replacement computer?","k":3},"judged":{"manual":"restore the encrypted vault from its backup"}},
+    {"id":"misplaced-id","search":{"text":"VLC-019","k":1},"judged":{"misc":"VLC-019"}},
+    {"id":"multiple-citations","search":{"text":"What steps and credential do I need after replacing my machine?","k":3},"judged":{"manual":"restore the encrypted vault from its backup","release":"original recovery key"}}
+  ]
+}

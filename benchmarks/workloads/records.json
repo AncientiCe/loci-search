@@ -1,0 +1,22 @@
+{
+  "workload":"records",
+  "version":1,
+  "documents":[
+    {"id":"b1","groups":["sales"],"amount":100,"owner":"north"},
+    {"id":"b2","groups":["sales","ops"],"amount":110,"owner":"north"},
+    {"id":"b3","groups":["ops"],"amount":112,"owner":"hidden"},
+    {"id":"b4","groups":["sales"],"amount":140,"owner":"south"},
+    {"id":"b5","groups":["sales"],"amount":140,"owner":"north"},
+    {"id":"b6","groups":["sales"],"amount":200,"owner":"east"},
+    {"id":"b7","groups":[],"amount":130,"owner":"hidden"}
+  ],
+  "steps":[
+    {"id":"first-page","select":{"principal":"sales","filter":{"amount":{"gte":100,"lt":200}},"sort":"amount","limit":2,"facet":"owner","save_cursor":"sales-page"},"expect":{"ids":["b1","b2"],"count":4,"facets":{"north":3,"south":1}}},
+    {"upsert":{"id":"b0","groups":["sales"],"amount":105,"owner":"west"}},
+    {"patch":{"id":"b4","amount":90}},
+    {"id":"pinned-next","select":{"principal":"sales","resume":"sales-page"},"expect":{"ids":["b4","b5"],"count":4,"facets":{"north":3,"south":1}}},
+    {"id":"fresh-order","select":{"principal":"sales","filter":{"amount":{"gte":100,"lt":200}},"sort":"amount","facet":"owner"},"expect":{"ids":["b1","b0","b2","b5"],"count":4,"facets":{"north":3,"west":1}}},
+    {"id":"different-group","select":{"principal":"ops","filter":{"amount":{"gte":100,"lt":200}},"sort":"amount","facet":"owner"},"expect":{"ids":["b2","b3"],"count":2,"facets":{"north":1,"hidden":1}}},
+    {"id":"no-permission","select":{"principal":"guest","sort":"amount","facet":"owner"},"expect":{"ids":[],"count":0,"facets":{}}}
+  ]
+}

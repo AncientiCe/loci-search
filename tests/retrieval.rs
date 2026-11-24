@@ -243,10 +243,12 @@ fn a_passage_reached_through_two_regions_appears_once() -> anyhow::Result<()> {
         judgments: BTreeMap::new(),
         required: Vec::new(),
     };
-    let mut config = SearchConfig::default();
-    config.limit = 20;
-    config.max_regions = 32;
-    config.max_chunks = 64;
+    let config = SearchConfig {
+        limit: 20,
+        max_regions: 32,
+        max_chunks: 64,
+        ..SearchConfig::default()
+    };
     let result = engine.search(&query, Strategy::Regional, &config)?;
     let shown = result
         .hits

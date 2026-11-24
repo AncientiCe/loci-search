@@ -4,6 +4,7 @@
 
 - Answer `429` when every worker is busy, without starting that request. A request that already holds a worker still commits or rolls back as one generation.
 - An interrupted model upgrade leaves the published generation and its vectors in place.
+- A full day of one event per minute can be appended while searches stay exact, including a late event in an earlier hour.
 - A document can set `embed` to false on a model index. It stays in lexical search and is left out of embedding and model rebuilds.
 - A long lexical question borrows up to four distinctive terms from its best hit so a second document can enter the top results. Short identifier queries stay exact.
 - Record one sequential pass of the four workload fixtures, and rehearse import, query comparison, backup, and restore on a disposable index.

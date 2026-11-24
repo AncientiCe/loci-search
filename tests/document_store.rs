@@ -801,3 +801,83 @@ fn a_skipped_document_stays_lexical_through_a_model_upgrade() -> Result<()> {
     assert_eq!(page.hits[0].id, "trace");
     Ok(())
 }
+
+#[test]
+fn a_full_day_replays_under_search_and_keeps_exact_hours() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = std::sync::Arc::new(Catalog::open(dir.path().join("catalog"))?);
+    catalog.create_index_with_settings(
+        "logs",
+        &json!({"model":"lexical","mappings":{"time":"date"},"stream":{"timestamp":"time","rollover_seconds":3600,"retention_seconds":86400,"automatic":false}}),
+    )?;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let failure = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    std::thread::scope(|scope| {
+        let reader = std::sync::Arc::clone(&catalog);
+        let stop_reader = std::sync::Arc::clone(&stop);
+        let failure_reader = std::sync::Arc::clone(&failure);
+        scope.spawn(move || {
+            let query = request(json!({"text": "replay", "limit": 1}));
+            while !stop_reader.load(std::sync::atomic::Ordering::Relaxed) {
+                match reader.search("logs", &query, &[]) {
+                    Ok(page) if page.exact && page.total <= 1441 => {}
+                    Ok(page) => {
+                        *failure_reader.lock().unwrap() = Some(format!(
+                            "inexact search total {} exact {}",
+                            page.total, page.exact
+                        ));
+                        break;
+                    }
+                    Err(error) => {
+                        *failure_reader.lock().unwrap() = Some(error.to_string());
+                        break;
+                    }
+                }
+            }
+        });
+        let mut batch = Vec::new();
+        for minute in 0..1440 {
+            batch.push(doc(
+                &format!("m{minute}"),
+                "1",
+                "day replay",
+                json!({"time": minute * 60}),
+                &[],
+            ));
+            if batch.len() == 120 {
+                catalog.bulk("logs", &batch).unwrap();
+                batch.clear();
+            }
+        }
+        catalog
+            .bulk(
+                "logs",
+                &[doc("late", "1", "day replay", json!({"time": 600}), &[])],
+            )
+            .unwrap();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    if let Some(error) = failure.lock().unwrap().clone() {
+        anyhow::bail!(error);
+    }
+    let page = catalog.search(
+        "logs",
+        &request(json!({
+            "text": "replay",
+            "limit": 1,
+            "aggregations": {
+                "hours": {"kind": "date_histogram", "field": "time", "start": 0, "end": 86400, "width": 3600}
+            }
+        })),
+        &[],
+    )?;
+    assert!(page.exact);
+    assert_eq!(page.total, 1441);
+    let hours = page.aggregations["hours"].as_array().expect("hour buckets");
+    assert_eq!(hours.len(), 24);
+    assert_eq!(hours[0], json!([0, 61]));
+    for (hour, bucket) in hours.iter().enumerate().skip(1) {
+        assert_eq!(*bucket, json!([hour * 3600, 60]), "hour {hour}");
+    }
+    Ok(())
+}

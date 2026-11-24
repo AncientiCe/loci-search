@@ -513,6 +513,19 @@ fn offsets(text: &str, terms: &BTreeSet<String>) -> Vec<Highlight> {
 // Score within the authorized query scope. SQLite's shared FTS table supplies
 // candidate IDs, but its corpus statistics also cover other indexes and readers.
 // BM25 uses k1=1.2 and b=0 here; field weights are applied to term frequencies.
+/// Terms from the best hit that can pull a second document into a long question.
+/// Short queries stay exact: a SKU or an identifier must not grow a new candidate set.
+fn evidence_terms(top: &Document, query: &BTreeSet<String>) -> Vec<String> {
+    let mut terms: Vec<String> = crate::terms(&top.text)
+        .filter(|term| term.chars().count() >= 5 && !query.contains(term))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    terms.sort_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
+    terms.truncate(4);
+    terms
+}
+
 fn rank_candidates(
     matches: &mut [(Document, f64)],
     words: &BTreeSet<String>,
@@ -579,6 +592,7 @@ impl Snapshot {
         );
         let text = request.text.trim();
         let mut words: BTreeSet<_> = crate::terms(text).collect();
+        let question = words.len() >= 8;
         ensure!(words.len() <= 128, "at most 128 query terms");
         let settings = self.settings()?;
         let mut synonyms: BTreeMap<String, Vec<String>> = settings
@@ -707,6 +721,57 @@ impl Snapshot {
                     )?
                 };
                 rank_candidates(&mut matches, &words, &boosts, population);
+            }
+            if question && request.sort.is_empty() && !matches.is_empty() {
+                let top = matches
+                    .iter()
+                    .max_by(|left, right| {
+                        left.1
+                            .total_cmp(&right.1)
+                            .then_with(|| right.0.id.cmp(&left.0.id))
+                    })
+                    .map(|(doc, _)| doc.clone());
+                if let Some(top) = top {
+                    let extra = evidence_terms(&top, &words);
+                    if !extra.is_empty() {
+                        let expression = extra
+                            .iter()
+                            .map(|term| format!("\"{term}\""))
+                            .collect::<Vec<_>>()
+                            .join(" OR ");
+                        let sql = format!(
+                            "SELECT d.body FROM loci_fts
+                             JOIN loci_documents d ON d.rowid = loci_fts.rowid
+                             WHERE loci_fts MATCH ?3 AND d.idx=?1{ACCESS}
+                             LIMIT 24"
+                        );
+                        let mut seen: BTreeSet<_> =
+                            matches.iter().map(|(doc, _)| doc.id.clone()).collect();
+                        let mut stmt = self.db.prepare(&sql)?;
+                        let mut rows = stmt.query(params![
+                            self.index,
+                            serde_json::to_string(principals)?,
+                            expression
+                        ])?;
+                        while let Some(row) = rows.next()? {
+                            let doc: Document = serde_json::from_str(&row.get::<_, String>(0)?)?;
+                            if seen.insert(doc.id.clone())
+                                && request
+                                    .filter
+                                    .as_ref()
+                                    .is_none_or(|filter| filter.matches(&doc, &settings))
+                            {
+                                matches.push((doc, 0.0));
+                            }
+                        }
+                        words.extend(extra);
+                        let population = matches.len().max(1);
+                        for (_, score) in &mut matches {
+                            *score = 0.0;
+                        }
+                        rank_candidates(&mut matches, &words, &boosts, population);
+                    }
+                }
             }
         }
         matches.sort_by(|(a, sa), (b, sb)| {

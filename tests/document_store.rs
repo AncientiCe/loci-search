@@ -365,3 +365,65 @@ fn model_upgrade_switches_vectors_with_the_source_generation() -> Result<()> {
     assert_eq!(encoded.changed, 1);
     Ok(())
 }
+
+#[test]
+fn a_long_question_borrows_distinctive_terms_from_the_best_hit() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = Catalog::open(dir.path().join("catalog"))?;
+    catalog.create_index("knowledge")?;
+    catalog.bulk(
+        "knowledge",
+        &[
+            doc(
+                "manual",
+                "r2",
+                "After replacing a machine, restore the encrypted vault from its backup.",
+                json!({}),
+                &[],
+            ),
+            doc(
+                "release",
+                "v2.4",
+                "Version 2.4 requires the original recovery key before a vault can be restored.",
+                json!({}),
+                &[],
+            ),
+            doc(
+                "misc",
+                "r7",
+                "The restore dialog reports VLC-019 when the recovery key is missing.",
+                json!({}),
+                &[],
+            ),
+            doc(
+                "invoice",
+                "r1",
+                "Download an invoice from the payment settings panel.",
+                json!({}),
+                &[],
+            ),
+        ],
+    )?;
+    let page = catalog.search(
+        "knowledge",
+        &request(json!({
+            "text": "What steps and credential do I need after replacing my machine?",
+            "limit": 3
+        })),
+        &[],
+    )?;
+    let ids: Vec<_> = page
+        .hits
+        .iter()
+        .map(|hit| hit.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"manual"), "{ids:?}");
+    assert!(ids.contains(&"release"), "{ids:?}");
+    let exact = catalog.search(
+        "knowledge",
+        &request(json!({"text": "VLC-019", "limit": 1})),
+        &[],
+    )?;
+    assert_eq!(exact.hits[0].id, "misc");
+    Ok(())
+}

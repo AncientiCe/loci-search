@@ -34,7 +34,7 @@ python -B benchmarks/workloads/live.py --binary target/debug/loci --workload kno
 
 Use `--workload catalog`, `records`, `knowledge` or `logs` for a single case group. Each capture path must be new. A lexical knowledge hit cites the complete returned document. A regional hit uses the passage coordinates supplied by the engine. The fixture IDs for source passages map to the original source URIs. The record index grants access to explicitly named groups. The log index uses hourly rollover and a one-day retention period, with manual expiration so the replay uses the same date every time.
 
-The Windows development build passed all four catalog cases, all five record cases and all seven log cases in a live replay. On the three knowledge queries, lexical retrieval passed two and omitted the release note from the two-source question. Both BGE-small-en-v1.5 and multilingual-E5-small passed all three through regional search. These are functional results on the checked-in fixtures. The lexical command above returns a failing status when it reproduces that missing passage.
+The checked-in fixtures pass on lexical retrieval, including the two-source question. A long question borrows up to four distinctive terms from its best hit and reads at most 24 further matches before the final ranking. An identifier or SKU query does not take that hop. Regional search with BGE-small-en-v1.5 or multilingual-E5-small remains the path that cites passage coordinates. These are functional results on the tiny fixtures, not a latency or relevance scorecard.
 
 ## Compare another adapter
 

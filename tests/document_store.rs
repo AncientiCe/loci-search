@@ -13,6 +13,7 @@ fn doc(id: &str, revision: &str, text: &str, fields: Value, readers: &[&str]) ->
             text: text.to_owned(),
             fields: serde_json::from_value(fields).unwrap(),
             readers: readers.iter().map(|s| s.to_string()).collect(),
+            embed: true,
         },
     }
 }
@@ -628,5 +629,121 @@ fn a_failed_model_upgrade_leaves_the_previous_generation() -> Result<()> {
     let after = catalog.snapshot("docs")?;
     assert_eq!(after.generation, generation);
     assert_eq!(after.settings()?["model"], json!("lexical"));
+    Ok(())
+}
+
+#[test]
+fn a_skipped_document_stays_lexical_through_a_model_upgrade() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = Catalog::open(dir.path().join("catalog"))?;
+    catalog.create_index_with_settings("logs", &json!({"model": "lexical"}))?;
+    let mut skipped = doc("trace", "1", "trace kept lexically", json!({}), &[]);
+    if let Mutation::Upsert { document } = &mut skipped {
+        document.embed = false;
+    }
+    catalog.bulk("logs", &[doc("kept", "1", "note", json!({}), &[]), skipped])?;
+    let generation = catalog.snapshot("logs")?.generation;
+    let codec = Embedding {
+        model_revision: "codec-1".into(),
+        dimensions: 2,
+        normalization: Normalization::L2,
+    };
+    let embedded = vec![PreparedDocument {
+        id: "kept".into(),
+        revision: "1".into(),
+        passages: vec![EncodedPassage {
+            start: 0,
+            end: 4,
+            vector: vec![1.0, 0.0],
+        }],
+    }];
+    let with_skipped = vec![
+        PreparedDocument {
+            id: "kept".into(),
+            revision: "1".into(),
+            passages: vec![EncodedPassage {
+                start: 0,
+                end: 4,
+                vector: vec![1.0, 0.0],
+            }],
+        },
+        PreparedDocument {
+            id: "trace".into(),
+            revision: "1".into(),
+            passages: vec![EncodedPassage {
+                start: 0,
+                end: 4,
+                vector: vec![0.0, 1.0],
+            }],
+        },
+    ];
+    assert!(
+        catalog
+            .publish_model(
+                "logs",
+                generation,
+                "bge-small-en-v1.5",
+                &codec,
+                &with_skipped
+            )
+            .is_err()
+    );
+    assert!(
+        catalog
+            .publish_model("logs", generation, "bge-small-en-v1.5", &codec, &[])
+            .is_err()
+    );
+    catalog.publish_model("logs", generation, "bge-small-en-v1.5", &codec, &embedded)?;
+    let snapshot = catalog.snapshot("logs")?;
+    let stored = snapshot.documents(&[])?;
+    let (passages, missing) = snapshot.encoded_passages(&stored, &codec)?;
+    assert!(missing.is_empty());
+    assert_eq!(passages.len(), 1);
+    assert_eq!(passages[0].document, "kept");
+    assert!(!snapshot.document("trace", &[])?.unwrap().embed);
+    drop(snapshot);
+    let page = catalog.search("logs", &request(json!({"text": "lexically"})), &[])?;
+    assert_eq!(page.total, 1);
+    assert_eq!(page.hits[0].id, "trace");
+    assert!(!page.hits[0].embed);
+
+    let traced = "trace kept lexically";
+    catalog.bulk_encoded(
+        "logs",
+        &[doc("trace", "2", traced, json!({}), &[])],
+        None,
+        "bge-small-en-v1.5",
+        &codec,
+        &[PreparedDocument {
+            id: "trace".into(),
+            revision: "2".into(),
+            passages: vec![EncodedPassage {
+                start: 0,
+                end: traced.len() as u64,
+                vector: vec![0.0, 1.0],
+            }],
+        }],
+    )?;
+    let snapshot = catalog.snapshot("logs")?;
+    let stored = snapshot.documents(&[])?;
+    let (passages, missing) = snapshot.encoded_passages(&stored, &codec)?;
+    assert!(missing.is_empty());
+    assert_eq!(passages.iter().filter(|p| p.document == "trace").count(), 1);
+    drop(snapshot);
+
+    let mut off = doc("trace", "3", traced, json!({}), &[]);
+    if let Mutation::Upsert { document } = &mut off {
+        document.embed = false;
+    }
+    catalog.bulk_encoded("logs", &[off], None, "bge-small-en-v1.5", &codec, &[])?;
+    let snapshot = catalog.snapshot("logs")?;
+    let stored = snapshot.documents(&[])?;
+    let (passages, missing) = snapshot.encoded_passages(&stored, &codec)?;
+    assert!(missing.is_empty());
+    assert!(passages.iter().all(|p| p.document != "trace"));
+    assert!(!snapshot.document("trace", &[])?.unwrap().embed);
+    drop(snapshot);
+    let page = catalog.search("logs", &request(json!({"text": "lexically"})), &[])?;
+    assert_eq!(page.hits[0].id, "trace");
     Ok(())
 }

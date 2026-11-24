@@ -20,7 +20,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+fn embed_by_default() -> bool {
+    true
+}
+
+fn embed_is_default(embed: &bool) -> bool {
+    *embed
+}
+
 /// A source document. An empty readers list makes the document public.
+/// `embed: false` keeps the text lexical and leaves it out of vector writes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Document {
@@ -31,6 +40,8 @@ pub struct Document {
     pub fields: BTreeMap<String, Value>,
     #[serde(default)]
     pub readers: Vec<String>,
+    #[serde(default = "embed_by_default", skip_serializing_if = "embed_is_default")]
+    pub embed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

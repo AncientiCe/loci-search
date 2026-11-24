@@ -7,6 +7,8 @@ export interface LociDocument {
   text: string;
   fields?: Record<string, Json>;
   readers?: string[];
+  /** False keeps the document lexical on an index that otherwise embeds writes. */
+  embed?: boolean;
 }
 
 export type Mutation =

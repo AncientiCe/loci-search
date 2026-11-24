@@ -113,6 +113,7 @@ fn mutation(mut obj: Map<String, Value>) -> Result<Mutation> {
             text,
             fields,
             readers,
+            embed: true,
         },
     })
 }
@@ -184,6 +185,7 @@ pub fn import(url: &str, index: &str, files: &[PathBuf]) -> Result<()> {
                         text,
                         fields: BTreeMap::new(),
                         readers: vec![],
+                        embed: true,
                     },
                 })?;
             }

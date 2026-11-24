@@ -15,6 +15,7 @@ fn main() -> Result<()> {
                 text: "Restore the encrypted vault from its backup.".into(),
                 fields: BTreeMap::new(),
                 readers: vec![],
+                embed: true,
             },
         }],
     )?;

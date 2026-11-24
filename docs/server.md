@@ -17,14 +17,14 @@ The default bind is `127.0.0.1:7707`. A non-loopback bind requires `--credential
 }]
 ```
 
-Create an index with `PUT /v1/indexes/{name}`. `"model": "lexical"` stores text only. `"bge-small-en-v1.5"` or `"multilingual-e5-small"` embeds each write. Install the pack before the first embedded write:
+Create an index with `PUT /v1/indexes/{name}`. `"model": "lexical"` stores text only. `"bge-small-en-v1.5"` or `"multilingual-e5-small"` embeds each write unless that document sets `"embed": false`. A skipped document remains in lexical search and is left out of the vector rebuild. Install the pack before the first embedded write:
 
 ```sh
 loci model-install bge-small-en-v1.5 --data loci-data
 loci model-install multilingual-e5-small --data loci-data --source /path/to/verified-pack
 ```
 
-`PUT /v1/indexes/{name}/model` rebuilds every document vector and publishes the new model in one generation. A reader opened on the previous generation keeps that generation. A bulk write that started against the old model is rejected.
+`PUT /v1/indexes/{name}/model` rebuilds every embedded document vector and publishes the new model in one generation. Documents with `"embed": false` stay lexical. A reader opened on the previous generation keeps that generation. A bulk write that started against the old model is rejected.
 
 The service runs maintenance about once a minute. It deletes expired cursor pages, merges lexical segments, and expires events on indexes whose stream policy has `"automatic": true`. `POST /v1/indexes/{name}/expire` applies the same retention cutoff at a caller-supplied timestamp, which is how the log fixture checks a fixed day.
 

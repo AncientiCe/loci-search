@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A document can set `embed` to false on a model index. It stays in lexical search and is left out of embedding and model rebuilds.
 - A long lexical question borrows up to four distinctive terms from its best hit so a second document can enter the top results. Short identifier queries stay exact.
 - Record one sequential pass of the four workload fixtures, and rehearse import, query comparison, backup, and restore on a disposable index.
 - Say when an exact scan stops at its match cap, and keep private documents out of snippets, suggestions, and totals.

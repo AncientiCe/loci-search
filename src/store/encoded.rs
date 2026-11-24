@@ -3,7 +3,7 @@ use crate::{Embedding, Passage};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 /// Model outputs prepared outside the catalog writer transaction.
 pub struct EncodedPassage {
@@ -104,20 +104,24 @@ impl Catalog {
             generation(&tx, index)? == expected,
             "stale generation while upgrading model"
         );
-        let count: usize = tx.query_row(
-            "SELECT count(*) FROM loci_documents WHERE idx=?",
-            [index],
-            |r| r.get(0),
-        )?;
+        let mut required = HashSet::new();
+        {
+            let mut stored = tx.prepare("SELECT body FROM loci_documents WHERE idx=?")?;
+            let mut rows = stored.query([index])?;
+            while let Some(row) = rows.next()? {
+                let doc: Document = serde_json::from_str(&row.get::<_, String>(0)?)?;
+                if doc.embed {
+                    required.insert(doc.id);
+                }
+            }
+        }
+        let prepared_ids = docs
+            .iter()
+            .map(|doc| doc.id.clone())
+            .collect::<HashSet<_>>();
         ensure!(
-            docs.len() == count
-                && docs
-                    .iter()
-                    .map(|d| &d.id)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len()
-                    == count,
-            "model upgrade must encode every source document once"
+            prepared_ids.len() == docs.len() && prepared_ids == required,
+            "model upgrade must encode every embedded document once"
         );
         tx.execute("DELETE FROM loci_vectors WHERE idx=?", [index])?;
         save(&tx, index, codec, docs)?;
@@ -183,7 +187,7 @@ impl Snapshot {
                     vector,
                 });
             }
-            if passages.len() == before && !d.text.trim().is_empty() {
+            if passages.len() == before && d.embed && !d.text.trim().is_empty() {
                 missing.push(pos);
             }
         }

@@ -43,6 +43,11 @@
             "items": {
               "type": "string"
             }
+          },
+          "embed": {
+            "type": "boolean",
+            "default": true,
+            "description": "When false, the document stays lexical and is omitted from embedding and model rebuilds."
           }
         },
         "additionalProperties": false

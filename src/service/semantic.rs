@@ -105,6 +105,7 @@ impl RegionalService {
         let encoder = self.encoder(pack)?;
         let mut enc = lock(&encoder)?;
         docs.into_iter()
+            .filter(|doc| doc.embed)
             .map(|doc| {
                 let mut passages = Vec::new();
                 for batch in spans(&doc.text).chunks(32) {

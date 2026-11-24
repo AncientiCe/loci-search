@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io::Write,
     time::Instant,
@@ -35,6 +36,12 @@ pub struct Report {
     membership_margin: f32,
     queries: usize,
     repeats: usize,
+    /// `precomputed` uses the vectors in the query file. `raw_text` encodes each query and adds that time to the sample.
+    query_track: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embed_p50_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embed_p95_ms: Option<f64>,
     config: SearchConfig,
     settings: Vec<Plan>,
     settings_frozen: bool,
@@ -144,6 +151,8 @@ struct Trace<'a> {
     query: &'a str,
     group: &'a str,
     elapsed_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embed_ms: Option<f64>,
     quality: Quality,
     ranked: Vec<&'a str>,
     result: &'a SearchResult,
@@ -330,14 +339,17 @@ struct Interval {
     upper_95: f64,
 }
 
+type QueryEncoder<'a> = dyn FnMut(&str) -> Result<Vec<f32>> + 'a;
+
 pub fn evaluate(
     engine: &mut Engine,
     queries: &[Query],
     config: &SearchConfig,
     run: &Run,
+    embed: Option<&mut QueryEncoder<'_>>,
     traces: impl Write,
 ) -> Result<Report> {
-    evaluate_with(engine, queries, config, run, None, traces)
+    evaluate_with(engine, queries, config, run, None, embed, traces)
 }
 
 #[derive(Clone, Copy)]
@@ -373,6 +385,7 @@ pub fn evaluate_comparison(
     config: &SearchConfig,
     run: &Run,
     development: Development<'_>,
+    embed: Option<&mut QueryEncoder<'_>>,
     traces: impl Write,
 ) -> Result<Report> {
     evaluate_with(
@@ -385,10 +398,12 @@ pub fn evaluate_comparison(
             native_source: None,
             head_to_head: false,
         }),
+        embed,
         traces,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_transfer(
     engine: &mut Engine,
     queries: &[Query],
@@ -396,6 +411,7 @@ pub fn evaluate_transfer(
     report: &FrozenComparison,
     development: Development<'_>,
     head_to_head: bool,
+    embed: Option<&mut QueryEncoder<'_>>,
     traces: impl Write,
 ) -> Result<Report> {
     evaluate_with(
@@ -408,6 +424,7 @@ pub fn evaluate_transfer(
             native_source: Some(report),
             head_to_head,
         }),
+        embed,
         traces,
     )
 }
@@ -418,6 +435,7 @@ pub fn evaluate_frozen(
     run: &Run,
     report: &FrozenComparison,
     client: &elastic::Client,
+    embed: Option<&mut QueryEncoder<'_>>,
     traces: impl Write,
 ) -> Result<Report> {
     evaluate_with(
@@ -426,6 +444,7 @@ pub fn evaluate_frozen(
         &report.config,
         run,
         Some(Comparison::Frozen { report, client }),
+        embed,
         traces,
     )
 }
@@ -468,6 +487,7 @@ fn evaluate_with(
     config: &SearchConfig,
     run: &Run,
     comparison: Option<Comparison<'_>>,
+    mut embed: Option<&mut QueryEncoder<'_>>,
     mut traces: impl Write,
 ) -> Result<Report> {
     config.validate()?;
@@ -578,18 +598,26 @@ fn evaluate_with(
     // One untimed pass per engine before collecting warm, single-query samples.
     for query in queries {
         for plan in &settings {
-            plan.search(engine, client, query)?;
+            let (prepared, _) =
+                prepared_query(query, &engine.manifest.embedding, embed.as_deref_mut())?;
+            plan.search(engine, client, &prepared)?;
         }
     }
     let mut samples = BTreeMap::<(usize, Option<&str>), Vec<Sample>>::new();
+    let mut embed_times = Vec::new();
     for repeat in 0..run.repeats {
         eprintln!("Measuring repeat {} of {}", repeat + 1, run.repeats);
         for (position, query) in queries.iter().enumerate() {
             for offset in 0..settings.len() {
                 let index = (position + repeat + offset) % settings.len();
+                let (prepared, embed_ms) =
+                    prepared_query(query, &engine.manifest.embedding, embed.as_deref_mut())?;
                 let started = Instant::now();
-                let result = settings[index].search(engine, client, query)?;
-                let elapsed_ms = milliseconds(started);
+                let result = settings[index].search(engine, client, &prepared)?;
+                let elapsed_ms = milliseconds(started) + embed_ms.unwrap_or(0.0);
+                if let Some(ms) = embed_ms {
+                    embed_times.push(ms);
+                }
                 let ranked = result
                     .hits
                     .iter()
@@ -621,6 +649,7 @@ fn evaluate_with(
                         query: &query.id,
                         group: &query.group,
                         elapsed_ms,
+                        embed_ms,
                         quality,
                         ranked,
                         result: &result,
@@ -639,7 +668,9 @@ fn evaluate_with(
     let references = graph_width.map_or(0, |_| run.exact_queries.min(queries.len()));
     for position in 0..references {
         let query = &queries[position * queries.len() / references];
-        let vector = engine.query_vector(query)?;
+        let (prepared, _) =
+            prepared_query(query, &engine.manifest.embedding, embed.as_deref_mut())?;
+        let vector = engine.query_vector(&prepared)?;
         let depth = config.depth.min(100);
         let started = Instant::now();
         let exact = engine.exact(&vector, depth);
@@ -731,6 +762,13 @@ fn evaluate_with(
             )
         })
         .collect();
+    let query_track = if embed_times.is_empty() {
+        "precomputed"
+    } else {
+        "raw_text"
+    };
+    let embed_p50_ms = (!embed_times.is_empty()).then(|| percentile(&mut embed_times, 0.50));
+    let embed_p95_ms = (!embed_times.is_empty()).then(|| percentile(&mut embed_times, 0.95));
     Ok(Report {
         version: env!("CARGO_PKG_VERSION"),
         platform: (std::env::consts::OS, std::env::consts::ARCH),
@@ -748,6 +786,9 @@ fn evaluate_with(
         membership_margin: MEMBERSHIP_MARGIN,
         queries: queries.len(),
         repeats: run.repeats,
+        query_track,
+        embed_p50_ms,
+        embed_p95_ms,
         config: config.clone(),
         settings,
         settings_frozen,
@@ -1045,6 +1086,99 @@ fn summarize(strategy: Strategy, group: &str, samples: &[Sample]) -> Summary {
     }
 }
 
+fn prepared_query<'a>(
+    query: &'a Query,
+    expected: &crate::Embedding,
+    embed: Option<&mut QueryEncoder<'_>>,
+) -> Result<(Cow<'a, Query>, Option<f64>)> {
+    let Some(embed) = embed else {
+        return Ok((Cow::Borrowed(query), None));
+    };
+    let started = Instant::now();
+    let vector = embed(&query.text)?;
+    let embed_ms = milliseconds(started);
+    ensure!(
+        query.embedding == *expected,
+        "query {} embedding manifest differs from the index",
+        query.id
+    );
+    ensure!(
+        vector.len() == expected.dimensions,
+        "raw-text embedding for {} has {} dimensions, index has {}",
+        query.id,
+        vector.len(),
+        expected.dimensions
+    );
+    let mut encoded = query.clone();
+    encoded.vector = vector;
+    Ok((Cow::Owned(encoded), Some(embed_ms)))
+}
+
+fn percentile(values: &mut [f64], fraction: f64) -> f64 {
+    values.sort_unstable_by(f64::total_cmp);
+    values[((values.len() as f64 * fraction).ceil() as usize) - 1]
+}
+
 fn milliseconds(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixture;
+    use crate::index::{Engine, ingest};
+    use crate::ranking::SearchConfig;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn raw_text_track_encodes_each_sample_and_rejects_a_short_vector() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("fixture.sqlite");
+        let (embedding, passages, queries) = fixture::generate(64).unwrap();
+        ingest(&db, passages, embedding, 16).unwrap();
+        let mut engine = Engine::open(&db).unwrap();
+        let config = SearchConfig::default();
+        let run = Run {
+            fixture: true,
+            repeats: 1,
+            exact_queries: 0,
+            index_bytes: 0,
+            ingest_ms: None,
+            open_ms: 0.0,
+        };
+        let vectors = queries
+            .iter()
+            .map(|query| (query.text.clone(), query.vector.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut calls = 0;
+        let mut traces = Vec::new();
+        let report = evaluate(
+            &mut engine,
+            &queries,
+            &config,
+            &run,
+            Some(&mut |text: &str| {
+                calls += 1;
+                Ok(vectors[text].clone())
+            }),
+            &mut traces,
+        )
+        .unwrap();
+        assert_eq!(report.query_track, "raw_text");
+        assert!(report.embed_p50_ms.is_some() && report.embed_p95_ms.is_some());
+        assert_eq!(calls, queries.len() * 3 * (1 + run.repeats));
+        let text = String::from_utf8(traces).unwrap();
+        assert!(text.lines().all(|line| line.contains("\"embed_ms\"")));
+        let err = evaluate(
+            &mut engine,
+            &queries,
+            &config,
+            &run,
+            Some(&mut |_| Ok(vec![1.0])),
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("dimensions"), "{err}");
+    }
 }

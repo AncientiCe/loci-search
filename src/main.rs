@@ -199,6 +199,12 @@ enum Command {
         repeats: usize,
         #[arg(long, default_value_t = 12)]
         exact_queries: usize,
+        /// Encode each query from its text with this installed pack and add that time to every sample.
+        #[arg(long, value_enum)]
+        embed_model: Option<loci_search::embedding::ModelPack>,
+        /// Model directory written by `loci model-install` (`<data>/models`).
+        #[arg(long, requires = "embed_model")]
+        model_cache: Option<PathBuf>,
         /// Separate development-query JSONL used to tune the comparison.
         #[arg(long, requires = "elastic_url", conflicts_with = "frozen_report")]
         dev: Option<PathBuf>,
@@ -471,6 +477,8 @@ fn main() -> Result<()> {
             leaf_size,
             repeats,
             exact_queries,
+            embed_model,
+            model_cache,
             dev,
             transfer_report,
             head_to_head,
@@ -515,6 +523,24 @@ fn main() -> Result<()> {
                 engine.manifest.chunks,
                 queries.len()
             );
+            let mut encoder = match embed_model {
+                Some(model) => {
+                    let cache = model_cache.context("provide --model-cache")?;
+                    ensure!(
+                        engine.manifest.embedding == model.manifest(),
+                        "index embedding {} does not match {}",
+                        engine.manifest.embedding.model_revision,
+                        model.id()
+                    );
+                    Some(model.open(&cache)?)
+                }
+                None => None,
+            };
+            let mut embed = encoder.as_mut().map(|encoder| {
+                Box::new(move |text: &str| encoder.embed_query(text))
+                    as Box<dyn FnMut(&str) -> Result<Vec<f32>>>
+            });
+            let embed = embed.as_mut().map(|encode| encode.as_mut());
             let trace_path = out.join("traces.partial");
             let traces = BufWriter::new(File::create(&trace_path)?);
             let report = if let Some(url) = elastic_url {
@@ -537,7 +563,15 @@ fn main() -> Result<()> {
                     if let Some(count) = graph_candidates {
                         frozen = frozen.with_graph_candidates(count)?;
                     }
-                    bench::evaluate_frozen(&mut engine, &queries, &run, &frozen, &client, traces)?
+                    bench::evaluate_frozen(
+                        &mut engine,
+                        &queries,
+                        &run,
+                        &frozen,
+                        &client,
+                        embed,
+                        traces,
+                    )?
                 } else {
                     let dev = jsonl::<Query>(&dev.context("provide --dev or --frozen-report")?)?;
                     let development = bench::Development {
@@ -553,6 +587,7 @@ fn main() -> Result<()> {
                             &source,
                             development,
                             head_to_head,
+                            embed,
                             traces,
                         )?
                     } else {
@@ -562,12 +597,13 @@ fn main() -> Result<()> {
                             &config,
                             &run,
                             development,
+                            embed,
                             traces,
                         )?
                     }
                 }
             } else {
-                bench::evaluate(&mut engine, &queries, &config, &run, traces)?
+                bench::evaluate(&mut engine, &queries, &config, &run, embed, traces)?
             };
             fs::rename(trace_path, out.join("traces.jsonl"))?;
             write_json(&out.join("report.json"), &report)?;

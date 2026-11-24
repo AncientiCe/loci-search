@@ -18,6 +18,8 @@ The benchmark compares [SQLite FTS5 BM25](https://www.sqlite.org/fts5.html), glo
 
 The built-in fixture checks behavior and reproducibility. Use a held-out judged corpus and a tuned external control for a quality or latency decision. This benchmark measures warm sequential latency. The recorded results below correspond to earlier engine and dependency versions. See the [benchmark history](README.md) and Git history for follow-up runs.
 
+Add `--embed-model bge-small-en-v1.5 --model-cache <data>/models` to encode each query from its text and include that time in every measured sample. The index manifest and the query files must already be that model. Without those flags the report stays on the precomputed vectors. A Cohere index does not match either local pack, so the command refuses it.
+
 ## External benchmark data
 
 The corpus archives, relevance judgments, and embeddings used for the external benchmarks are downloaded separately and kept under `runs/`. Check the upstream terms before using or redistributing these files. The repository's MIT license covers the project code and documentation. See the dataset cards for [FiQA](https://huggingface.co/datasets/BeIR/fiqa), [NFCorpus](https://huggingface.co/datasets/BeIR/nfcorpus), [HotpotQA](https://huggingface.co/datasets/BeIR/hotpotqa), and [Cohere BEIR embeddings](https://huggingface.co/datasets/CohereLabs/beir-embed-english-v3).

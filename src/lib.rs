@@ -41,7 +41,7 @@ pub struct Passage {
     pub vector: Vec<f32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Query {
     pub id: String,
     pub text: String,

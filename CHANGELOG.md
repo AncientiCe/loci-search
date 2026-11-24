@@ -9,6 +9,7 @@
 - Each in-flight regional search keeps its own scratch buffers, and a saved graph is rebuilt when the vectors change.
 - Runnable Rust examples cover knowledge, catalog, records, and logs.
 - Operator notes record the catalog file, the worker cap, and the published million-passage graph size.
+- `loci bench --embed-model` encodes each query from its text and adds that time to the sample. The model must match the index.
 - An interrupted model upgrade leaves the published generation and its vectors in place.
 - A full day of one event per minute can be appended while searches stay exact, including a late event in an earlier hour.
 - A document can set `embed` to false on a model index. It stays in lexical search and is left out of embedding and model rebuilds.

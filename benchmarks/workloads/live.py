@@ -200,6 +200,35 @@ class Adapter:
         return result
 
 
+def measure_followups(server):
+    def repeat(call, count=31):
+        samples = []
+        for _ in range(count):
+            started = time.perf_counter()
+            call()
+            samples.append(round((time.perf_counter() - started) * 1000, 3))
+        warm = samples[1:]
+        return {
+            "cold_ms": samples[0],
+            "p50_ms": percentile(warm, 0.50),
+            "p95_ms": percentile(warm, 0.95),
+            "p99_ms": percentile(warm, 0.99),
+        }
+
+    warm = repeat(lambda: server.api("POST", "/v1/indexes/catalog/search", {"text": "LMP-201", "limit": 1}))
+    autocomplete = repeat(lambda: server.api("POST", "/v1/indexes/catalog/suggest", {"prefix": "lan", "limit": 5}))
+    started = time.perf_counter()
+    server.api("POST", "/v1/indexes/catalog/bulk", {"operations": [{
+        "op": "upsert",
+        "document": {"id": "signal", "revision": "1", "text": "signal lantern", "fields": {"sku": "SIG-1"}},
+    }]})
+    visible = server.api("POST", "/v1/indexes/catalog/search", {"text": "SIG-1", "limit": 1})
+    delay_ms = round((time.perf_counter() - started) * 1000, 3)
+    if not visible["hits"] or visible["hits"][0]["id"] != "signal":
+        raise RuntimeError(f"written document was not searchable: {visible}")
+    return {"catalog_warm_search": warm, "catalog_autocomplete": autocomplete, "write_to_search_ms": delay_ms}
+
+
 def percentile(values, fraction):
     if not values:
         return None
@@ -290,6 +319,7 @@ def main():
                     failed += bad
                     timings.extend(rows)
                 print(f"{passed} live cases passed, {failed} failed; knowledge model={args.model}")
+                followups = measure_followups(server) if not args.workload or args.workload == "catalog" else None
                 if args.scorecard:
                     elapsed = [row["elapsed_ms"] for row in timings if row["passed"]]
                     args.scorecard.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +333,7 @@ def main():
                         "p50_ms": percentile(elapsed, 0.50),
                         "p95_ms": percentile(elapsed, 0.95),
                         "max_ms": max(elapsed) if elapsed else None,
+                        "followups": followups,
                         "rows": timings,
                     }, indent=2) + "\n", encoding="utf-8")
                 return 1 if failed else 0

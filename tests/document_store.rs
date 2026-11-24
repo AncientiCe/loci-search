@@ -454,6 +454,49 @@ fn an_uncommitted_write_is_absent_after_reopen() -> Result<()> {
 }
 
 #[test]
+fn an_interrupted_compaction_keeps_the_published_generation() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("catalog.sqlite");
+    let catalog = Catalog::open(&path)?;
+    catalog.create_index("docs")?;
+    let batch = (0..12)
+        .map(|n| {
+            doc(
+                &format!("d{n}"),
+                "1",
+                &format!("ledger entry {n} amber"),
+                json!({}),
+                &[],
+            )
+        })
+        .collect::<Vec<_>>();
+    let written = catalog.bulk("docs", &batch)?;
+    let before = catalog.search("docs", &request(json!({"text": "amber", "limit": 12})), &[])?;
+    assert_eq!(before.total, 12);
+    assert_eq!(before.generation, written.generation);
+    {
+        let mut db = rusqlite::Connection::open(&path)?;
+        let tx = db.transaction()?;
+        tx.execute(
+            "INSERT INTO loci_fts(loci_fts, rank) VALUES('merge', 32)",
+            [],
+        )?;
+        drop(tx);
+    }
+    let catalog = Catalog::open(&path)?;
+    let after = catalog.search("docs", &request(json!({"text": "amber", "limit": 12})), &[])?;
+    assert_eq!(after.generation, written.generation);
+    assert_eq!(after.total, 12);
+    assert_eq!(after.hits.len(), 12);
+    catalog.maintain(0)?;
+    let maintained =
+        catalog.search("docs", &request(json!({"text": "amber", "limit": 12})), &[])?;
+    assert_eq!(maintained.generation, written.generation);
+    assert_eq!(maintained.total, 12);
+    Ok(())
+}
+
+#[test]
 fn readers_see_one_generation_while_a_write_commits() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let catalog = std::sync::Arc::new(Catalog::open(dir.path().join("catalog"))?);

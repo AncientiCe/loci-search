@@ -38,7 +38,14 @@ loci restore --input loci-data.sqlite --data loci-data-restored
 
 Import sends batches to a running server. The named index must already exist. It reads `LOCI_TOKEN` when the server requires a bearer token. Backup writes a new SQLite snapshot and refuses to replace an existing file. Restore checks that snapshot, then copies it into an empty data directory.
 
-The console at `/` and the clients under `clients/` call this API. The embedded example is `cargo run --locked --example embedded`.
+The console at `/` and the clients under `clients/` call this API. Runnable Rust examples, one per workload:
+
+```sh
+cargo run --locked --example knowledge
+cargo run --locked --example catalog
+cargo run --locked --example records
+cargo run --locked --example logs
+```
 
 `python tools/rehearse_cutover.py --binary target/debug/loci` imports two documents, checks an ordered query, restores a backup into an empty directory, and checks that a second restore refuses to overwrite it. That script stays in Python because it replays an Elasticsearch export. Product checks run in Rust: `cargo test --bin loci a_fresh_catalog_highlights_an_imported_note_within_ten_minutes` starts from an empty data directory, imports one Markdown note, and checks that search highlights a sentence from that note within ten minutes. `benchmarks/workloads/live.py --scorecard` records fixture disk, working set, and restart time.
 

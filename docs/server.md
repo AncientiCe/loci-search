@@ -39,3 +39,5 @@ Import sends batches to a running server. The named index must already exist. It
 The console at `/` and the clients under `clients/` call this API. The embedded example is `cargo run --locked --example embedded`.
 
 `python tools/rehearse_cutover.py --binary target/debug/loci` imports two documents, checks an ordered query, restores a backup into an empty directory, and checks that a second restore refuses to overwrite it.
+
+The supported release is the latest version published from an annotated tag. `main` can move ahead of that release. An exact search that stops at `match_limit` sets `exact` to false and `limit_reason` to `match_limit` instead of presenting a partial total as complete. The default cap is 100000 authorized matches.

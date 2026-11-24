@@ -93,6 +93,8 @@ pub struct SearchRequest {
     pub synonyms: BTreeMap<String, Vec<String>>,
     pub boosts: BTreeMap<String, f64>,
     pub cursor: Option<String>,
+    /// Stop scanning once this many authorized matches are in hand.
+    pub match_limit: usize,
 }
 
 impl Default for SearchRequest {
@@ -110,6 +112,7 @@ impl Default for SearchRequest {
             synonyms: BTreeMap::new(),
             boosts: BTreeMap::new(),
             cursor: None,
+            match_limit: 100_000,
         }
     }
 }
@@ -138,6 +141,19 @@ pub struct SearchPage {
     pub highlights: BTreeMap<String, Vec<Highlight>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// False when `match_limit` stopped the scan before every authorized match was read.
+    #[serde(default = "exact_answer", skip_serializing_if = "is_exact")]
+    pub exact: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_reason: Option<String>,
+}
+
+fn exact_answer() -> bool {
+    true
+}
+
+fn is_exact(value: &bool) -> bool {
+    *value
 }
 
 fn field<'a>(document: &'a Document, key: &str) -> Option<Cow<'a, Value>> {
@@ -790,6 +806,13 @@ impl Snapshot {
                 a.id.cmp(&b.id)
             }
         });
+        let cap = request.match_limit.clamp(1, 100_000);
+        let (exact, limit_reason) = if matches.len() > cap {
+            matches.truncate(cap);
+            (false, Some("match_limit".to_string()))
+        } else {
+            (true, None)
+        };
         let facets = facets(&matches, &request.facets);
         let aggregations = request
             .aggregations
@@ -818,6 +841,8 @@ impl Snapshot {
             aggregations,
             highlights,
             next_cursor: None,
+            exact,
+            limit_reason,
         })
     }
 

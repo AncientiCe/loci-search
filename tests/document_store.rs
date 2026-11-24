@@ -483,3 +483,107 @@ fn readers_see_one_generation_while_a_write_commits() -> Result<()> {
     assert!(catalog.snapshot_at("docs", 1).is_err());
     Ok(())
 }
+
+#[test]
+fn private_text_stays_out_of_hits_snippets_suggestions_and_totals() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = Catalog::open(dir.path().join("catalog"))?;
+    catalog.create_index("records")?;
+    let team = vec!["team".to_owned()];
+    catalog.bulk(
+        "records",
+        &[
+            doc("open", "1", "shared lamp", json!({"price": 2}), &["team"]),
+            doc(
+                "secret",
+                "1",
+                "hidden xylophone",
+                json!({"price": 9}),
+                &["other"],
+            ),
+        ],
+    )?;
+    let page = catalog.search(
+        "records",
+        &request(json!({
+            "text": "lamp xylophone",
+            "highlight": true,
+            "facets": ["price"],
+            "aggregations": {"sum": {"kind": "sum", "field": "price"}}
+        })),
+        &team,
+    )?;
+    assert!(page.exact);
+    assert_eq!(page.total, 1);
+    assert_eq!(page.hits[0].id, "open");
+    assert!(page.highlights["open"].is_empty() || page.highlights.contains_key("open"));
+    assert!(!page.highlights.contains_key("secret"));
+    let snippet = format!("{:?}", page.highlights);
+    assert!(!snippet.contains("xylophone"));
+    assert_eq!(page.aggregations["sum"], json!(2));
+    assert!(
+        catalog
+            .snapshot("records")?
+            .suggest("xylo", 5, &team)?
+            .is_empty()
+    );
+    assert_eq!(
+        catalog.snapshot("records")?.suggest("lamp", 5, &team)?,
+        vec!["lamp".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_match_limit_is_reported_instead_of_an_exact_total() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = Catalog::open(dir.path().join("catalog"))?;
+    catalog.create_index("docs")?;
+    catalog.bulk(
+        "docs",
+        &[
+            doc("a", "1", "lamp", json!({}), &[]),
+            doc("b", "1", "lamp", json!({}), &[]),
+        ],
+    )?;
+    let mut limited = request(json!({"text": "lamp", "limit": 10}));
+    limited.match_limit = 1;
+    let page = catalog.search("docs", &limited, &[])?;
+    assert!(!page.exact);
+    assert_eq!(page.limit_reason.as_deref(), Some("match_limit"));
+    assert_eq!(page.total, 1);
+    Ok(())
+}
+
+#[test]
+fn a_failed_model_upgrade_leaves_the_previous_generation() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = Catalog::open(dir.path().join("catalog"))?;
+    catalog.create_index_with_settings("docs", &json!({"model": "lexical"}))?;
+    catalog.bulk("docs", &[doc("a", "1", "text", json!({}), &[])])?;
+    let before = catalog.snapshot("docs")?;
+    let generation = before.generation;
+    let codec = Embedding {
+        model_revision: "codec-1".into(),
+        dimensions: 2,
+        normalization: Normalization::L2,
+    };
+    let broken = vec![PreparedDocument {
+        id: "a".into(),
+        revision: "1".into(),
+        passages: vec![EncodedPassage {
+            start: 0,
+            end: 4,
+            vector: vec![1.0],
+        }],
+    }];
+    assert!(
+        catalog
+            .publish_model("docs", generation, "bge-small-en-v1.5", &codec, &broken)
+            .is_err()
+    );
+    let after = catalog.snapshot("docs")?;
+    assert_eq!(after.generation, generation);
+    assert_eq!(after.settings()?["model"], json!("lexical"));
+    Ok(())
+}

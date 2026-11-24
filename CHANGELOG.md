@@ -3,6 +3,7 @@
 ## Unreleased
 
 - A long lexical question borrows up to four distinctive terms from its best hit so a second document can enter the top results. Short identifier queries stay exact.
+- Record one sequential pass of the four workload fixtures, and rehearse import, query comparison, backup, and restore on a disposable index.
 - Serve a local HTTP catalog with exact filters, permissions, cursors, and event retention.
 - Embed new writes with a pinned local model and switch that model together with every stored vector.
 - Reclaim expired cursors, expire automatic event streams, and compact the lexical index on a one-minute maintenance pass.

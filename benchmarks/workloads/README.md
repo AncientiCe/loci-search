@@ -23,6 +23,7 @@ The supplied live adapter starts a fresh service on a temporary loopback port, g
 ```sh
 cargo build --locked --bin loci
 python -B benchmarks/workloads/live.py --binary target/debug/loci --capture engine-results.jsonl
+python -B benchmarks/workloads/live.py --binary target/debug/loci --scorecard runs/workload-scorecard.json
 python benchmarks/workloads/validate.py --actual engine-results.jsonl
 ```
 
@@ -34,7 +35,7 @@ python -B benchmarks/workloads/live.py --binary target/debug/loci --workload kno
 
 Use `--workload catalog`, `records`, `knowledge` or `logs` for a single case group. Each capture path must be new. A lexical knowledge hit cites the complete returned document. A regional hit uses the passage coordinates supplied by the engine. The fixture IDs for source passages map to the original source URIs. The record index grants access to explicitly named groups. The log index uses hourly rollover and a one-day retention period, with manual expiration so the replay uses the same date every time.
 
-The checked-in fixtures pass on lexical retrieval, including the two-source question. A long question borrows up to four distinctive terms from its best hit and reads at most 24 further matches before the final ranking. An identifier or SKU query does not take that hop. Regional search with BGE-small-en-v1.5 or multilingual-E5-small remains the path that cites passage coordinates. These are functional results on the tiny fixtures, not a latency or relevance scorecard.
+The checked-in fixtures pass on lexical retrieval, including the two-source question. A long question borrows up to four distinctive terms from its best hit and reads at most 24 further matches before the final ranking. An identifier or SKU query does not take that hop. Regional search with BGE-small-en-v1.5 or multilingual-E5-small remains the path that cites passage coordinates. These are functional results on the tiny fixtures. `--scorecard` adds the elapsed time of that one sequential pass. It is not a load test or the million-passage relevance gate. `runs/` stays untracked, so copy the summary into the commit message when you record a run.
 
 ## Compare another adapter
 

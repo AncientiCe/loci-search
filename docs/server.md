@@ -37,3 +37,5 @@ loci restore --input loci-data.sqlite --data loci-data-restored
 Import sends batches to a running server. The named index must already exist. It reads `LOCI_TOKEN` when the server requires a bearer token. Backup writes a new SQLite snapshot and refuses to replace an existing file. Restore checks that snapshot, then copies it into an empty data directory.
 
 The console at `/` and the clients under `clients/` call this API. The embedded example is `cargo run --locked --example embedded`.
+
+`python tools/rehearse_cutover.py --binary target/debug/loci` imports two documents, checks an ordered query, restores a backup into an empty directory, and checks that a second restore refuses to overwrite it.

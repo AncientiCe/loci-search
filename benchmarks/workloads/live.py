@@ -4,6 +4,7 @@ import argparse
 from collections import deque
 import json
 from pathlib import Path
+import time
 from queue import Empty, Queue
 import secrets
 import subprocess
@@ -199,15 +200,26 @@ class Adapter:
         return result
 
 
+def percentile(values, fraction):
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = (len(ordered) - 1) * fraction
+    low = int(rank)
+    high = min(low + 1, len(ordered) - 1)
+    return round(ordered[low] + (ordered[high] - ordered[low]) * (rank - low), 3)
+
+
 def run_workload(server, name, model, stream):
     fixture = json.loads((validate.ROOT / f"{name}.json").read_text(encoding="utf-8"))
     adapter = Adapter(server, name, model)
     successes = failures = 0
+    timings = []
     try:
         adapter.create(fixture["documents"])
     except (OSError, RuntimeError, ValueError) as error:
         print(f"FAIL {name} setup: {error}", file=sys.stderr)
-        return 0, sum("id" in s for s in fixture["steps"])
+        return 0, sum("id" in s for s in fixture["steps"]), timings
     blocked = None
     for step in fixture["steps"]:
         if "id" not in step:
@@ -218,6 +230,7 @@ def run_workload(server, name, model, stream):
             continue
         case = step["id"]
         result = None
+        started = time.perf_counter()
         try:
             if blocked:
                 raise RuntimeError(blocked)
@@ -233,12 +246,20 @@ def run_workload(server, name, model, stream):
                 result = {"error": str(error)}
             print(f"FAIL {name}/{case}: {error}", file=sys.stderr)
             failures += 1
+            passed = False
         else:
             print(f"PASS {name}/{case}")
             successes += 1
+            passed = True
+        timings.append({
+            "workload": name,
+            "id": case,
+            "passed": passed,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+        })
         if stream:
             print(json.dumps({"workload": name, "id": case, "result": result}), file=stream)
-    return successes, failures
+    return successes, failures, timings
 
 
 def main():
@@ -246,6 +267,7 @@ def main():
     parser.add_argument("--binary", required=True, type=Path, help="built loci executable")
     parser.add_argument("--workload", choices=validate.WORKLOADS)
     parser.add_argument("--capture", type=Path, help="new JSONL output file")
+    parser.add_argument("--scorecard", type=Path, help="write one sequential pass, including timings")
     parser.add_argument("--model", choices=("lexical", "bge-small-en-v1.5", "multilingual-e5-small"), default="lexical")
     parser.add_argument("--model-source", type=Path, help="local pinned model assets for a semantic run")
     args = parser.parse_args()
@@ -261,11 +283,28 @@ def main():
                                     "--source", str(args.model_source)], check=True)
                 server.start()
                 passed = failed = 0
+                timings = []
                 for name in ([args.workload] if args.workload else validate.WORKLOADS):
-                    ok, bad = run_workload(server, name, args.model, output)
+                    ok, bad, rows = run_workload(server, name, args.model, output)
                     passed += ok
                     failed += bad
+                    timings.extend(rows)
                 print(f"{passed} live cases passed, {failed} failed; knowledge model={args.model}")
+                if args.scorecard:
+                    elapsed = [row["elapsed_ms"] for row in timings if row["passed"]]
+                    args.scorecard.parent.mkdir(parents=True, exist_ok=True)
+                    args.scorecard.write_text(json.dumps({
+                        "kind": "workload-fixtures",
+                        "note": "One sequential pass on a fresh process. These tiny fixtures are not a load, latency, or 1M relevance gate.",
+                        "model": args.model,
+                        "cases": len(timings),
+                        "passed": passed,
+                        "failed": failed,
+                        "p50_ms": percentile(elapsed, 0.50),
+                        "p95_ms": percentile(elapsed, 0.95),
+                        "max_ms": max(elapsed) if elapsed else None,
+                        "rows": timings,
+                    }, indent=2) + "\n", encoding="utf-8")
                 return 1 if failed else 0
             finally:
                 server.stop()

@@ -58,6 +58,12 @@ jobs:
           & "./target/$env:TARGET/release/$env:EXECUTABLE" bench --fixture --chunks 128 --repeats 1 --out runs/ci-smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/release.py package --target $env:TARGET --output dist
+      - name: Score the workload fixtures and rehearse cutover
+        run: |
+          python benchmarks/workloads/live.py --binary "./target/$env:TARGET/release/$env:EXECUTABLE" --scorecard runs/workload-scorecard.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/rehearse_cutover.py --binary "./target/$env:TARGET/release/$env:EXECUTABLE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   package:
     name: Package and audit
     runs-on: ubuntu-latest

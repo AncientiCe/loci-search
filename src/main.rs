@@ -9,7 +9,7 @@ use loci_search::{
     profile,
     ranking::{RegionalRerank, SearchConfig, Strategy},
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, BufWriter, Read, Write},
@@ -135,6 +135,25 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value_t = 100_000)]
         chunks: usize,
+    },
+    /// Encode passage and query text with an installed local model.
+    ///
+    /// Packed vectors resume from `out/vectors.f32` when that file already holds whole records.
+    Embed {
+        #[arg(value_enum)]
+        model: loci_search::embedding::ModelPack,
+        #[arg(long)]
+        model_cache: PathBuf,
+        #[arg(long)]
+        passages: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Query JSONL files. Each is rewritten under the same file name in `out`.
+        #[arg(long)]
+        queries: Vec<PathBuf>,
+        /// Encode only the first N passages. Zero reads the whole file.
+        #[arg(long, default_value_t = 0)]
+        limit: u64,
     },
     /// Atomically replace the index with a complete JSONL snapshot.
     Ingest {
@@ -387,6 +406,14 @@ fn main() -> Result<()> {
             write_jsonl(&out.join("queries.jsonl"), &queries)?;
             write_json(&out.join("query.json"), &queries[0])?;
         }
+        Command::Embed {
+            model,
+            model_cache,
+            passages,
+            out,
+            queries,
+            limit,
+        } => embed_corpus(model, &model_cache, &passages, &out, &queries, limit)?,
         Command::Ingest {
             db,
             passages,
@@ -613,6 +640,184 @@ fn main() -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+fn embed_corpus(
+    model: loci_search::embedding::ModelPack,
+    model_cache: &Path,
+    passages: &Path,
+    out: &Path,
+    queries: &[PathBuf],
+    limit: u64,
+) -> Result<()> {
+    fs::create_dir_all(out)?;
+    let embedding = model.manifest();
+    write_json(&out.join("embedding.json"), &embedding)?;
+    let mut encoder = model.open_threads(model_cache, 8)?;
+    let record = embedding
+        .dimensions
+        .checked_mul(size_of::<f32>())
+        .context("vector width overflows")?;
+    let vector_path = out.join("vectors.f32");
+    let existing = fs::metadata(&vector_path).map_or(0, |meta| meta.len());
+    ensure!(
+        existing.is_multiple_of(record as u64),
+        "packed vector file ends in a partial record"
+    );
+    let skip = existing / record as u64;
+    let mut packed = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&vector_path)?;
+    let mut batch = Vec::new();
+    let mut seen = 0u64;
+    let mut written = skip;
+    let started = Instant::now();
+    for line in BufReader::new(File::open(passages)?).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        seen += 1;
+        if seen <= skip {
+            continue;
+        }
+        if limit > 0 && seen > limit {
+            break;
+        }
+        let passage: Passage = serde_json::from_str(&line)?;
+        batch.push(passage.text);
+        if batch.len() == 64 {
+            written = flush_passages(
+                &mut encoder,
+                &mut batch,
+                &mut packed,
+                written,
+                embedding.dimensions,
+                &started,
+            )?;
+        }
+    }
+    written = flush_passages(
+        &mut encoder,
+        &mut batch,
+        &mut packed,
+        written,
+        embedding.dimensions,
+        &started,
+    )?;
+    packed.flush()?;
+    let elapsed = started.elapsed().as_secs_f64().max(0.001);
+    println!(
+        "encoded {written} passages in {elapsed:.1}s ({:.0}/s)",
+        (written - skip) as f64 / elapsed
+    );
+    for path in queries {
+        let name = path.file_name().context("query path has no file name")?;
+        rewrite_queries(&mut encoder, &embedding, path, &out.join(name))?;
+    }
+    Ok(())
+}
+
+fn flush_passages(
+    encoder: &mut loci_search::embedding::LocalEncoder,
+    batch: &mut Vec<String>,
+    packed: &mut File,
+    mut written: u64,
+    dimensions: usize,
+    started: &Instant,
+) -> Result<u64> {
+    if batch.is_empty() {
+        return Ok(written);
+    }
+    let vectors = encoder.embed_passages(batch)?;
+    ensure!(
+        vectors.len() == batch.len(),
+        "passage embedding batch was short"
+    );
+    for vector in vectors {
+        ensure!(
+            vector.len() == dimensions,
+            "passage embedding width changed"
+        );
+        for value in vector {
+            packed.write_all(&value.to_le_bytes())?;
+        }
+    }
+    written += batch.len() as u64;
+    batch.clear();
+    if written.is_multiple_of(1024) {
+        let elapsed = started.elapsed().as_secs_f64().max(0.001);
+        eprintln!(
+            "encoded {written} passages ({:.0}/s)",
+            written as f64 / elapsed
+        );
+    }
+    Ok(written)
+}
+
+#[derive(Deserialize)]
+struct SourceQuery {
+    id: String,
+    text: String,
+    #[serde(default = "source_group")]
+    group: String,
+    #[serde(default)]
+    judgments: std::collections::BTreeMap<String, u8>,
+    #[serde(default)]
+    required: Vec<String>,
+}
+
+fn source_group() -> String {
+    "general".into()
+}
+
+fn rewrite_queries(
+    encoder: &mut loci_search::embedding::LocalEncoder,
+    embedding: &Embedding,
+    input: &Path,
+    output: &Path,
+) -> Result<()> {
+    let mut sources = Vec::new();
+    for line in BufReader::new(File::open(input)?).lines() {
+        let line = line?;
+        if !line.trim().is_empty() {
+            sources.push(serde_json::from_str::<SourceQuery>(&line)?);
+        }
+    }
+    let mut encoded = Vec::with_capacity(sources.len());
+    for batch in sources.chunks(64) {
+        encoded.extend(
+            encoder.embed_queries(
+                &batch
+                    .iter()
+                    .map(|query| query.text.clone())
+                    .collect::<Vec<_>>(),
+            )?,
+        );
+    }
+    ensure!(
+        encoded.len() == sources.len(),
+        "query embedding batch was short"
+    );
+    let mut file = BufWriter::new(File::create(output)?);
+    for (source, vector) in sources.into_iter().zip(encoded) {
+        serde_json::to_writer(
+            &mut file,
+            &Query {
+                id: source.id,
+                text: source.text,
+                embedding: embedding.clone(),
+                vector,
+                group: source.group,
+                judgments: source.judgments,
+                required: source.required,
+            },
+        )?;
+        file.write_all(b"\n")?;
+    }
+    file.flush()?;
     Ok(())
 }
 

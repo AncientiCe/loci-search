@@ -143,12 +143,14 @@ def elastic_index(directory, base, index, vectors=None, workers=1, max_segments=
     if workers < 1 or max_segments < 1:
         raise ValueError("Workers and maximum segments must be positive")
     started = perf_counter()
+    manifest = directory / "embedding.json"
+    dimensions = json.loads(manifest.read_text(encoding="utf-8"))["dimensions"] if manifest.exists() else DIMENSIONS
     mapping = {"dynamic": "strict", "properties": {
         "text": {"type": "text", "analyzer": "standard", "fields": {
             "english": {"type": "text", "analyzer": "english"},
         }},
         "embedding": {
-            "type": "dense_vector", "dims": DIMENSIONS, "similarity": "cosine",
+            "type": "dense_vector", "dims": dimensions, "similarity": "cosine",
             "index_options": {"type": "hnsw", "m": 16, "ef_construction": 100},
         },
         "passage_id": {"type": "keyword"},
@@ -192,8 +194,8 @@ def elastic_index(directory, base, index, vectors=None, workers=1, max_segments=
             header = json.dumps({"index": {"_id": identifier}}).encode()
             document = {"passage_id": identifier, "text": passage["text"]}
             if vector_stream is not None:
-                data = vector_stream.read(DIMENSIONS * 4)
-                if len(data) != DIMENSIONS * 4 or "vector" in passage:
+                data = vector_stream.read(dimensions * 4)
+                if len(data) != dimensions * 4 or "vector" in passage:
                     raise ValueError(f"Invalid packed vector for {identifier}")
                 document["embedding"] = np.frombuffer(data, dtype="<f4")
                 body = orjson.dumps(document, option=orjson.OPT_SERIALIZE_NUMPY)

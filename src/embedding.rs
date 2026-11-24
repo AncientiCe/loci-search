@@ -267,6 +267,12 @@ impl ModelPack {
 
     #[cfg(feature = "local-model")]
     pub fn open(self, cache: &Path) -> Result<LocalEncoder> {
+        self.open_threads(cache, 4)
+    }
+
+    /// `thread_cap` limits ONNX intra-op threads. The service keeps this at 4.
+    #[cfg(feature = "local-model")]
+    pub fn open_threads(self, cache: &Path, thread_cap: usize) -> Result<LocalEncoder> {
         use fastembed::{
             InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
             UserDefinedEmbeddingModel,
@@ -304,7 +310,8 @@ impl ModelPack {
         };
         let model = UserDefinedEmbeddingModel::new(read("onnx/model.onnx")?, tokenizer)
             .with_pooling(pooling);
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+        let threads =
+            std::thread::available_parallelism().map_or(1, |n| n.get().min(thread_cap.max(1)));
         let options = InitOptionsUserDefined::default()
             .with_max_length(512)
             .with_intra_threads(threads);
@@ -317,6 +324,11 @@ impl ModelPack {
 
     #[cfg(not(feature = "local-model"))]
     pub fn open(self, _cache: &Path) -> Result<LocalEncoder> {
+        anyhow::bail!("this binary was built without local-model support")
+    }
+
+    #[cfg(not(feature = "local-model"))]
+    pub fn open_threads(self, _cache: &Path, _thread_cap: usize) -> Result<LocalEncoder> {
         anyhow::bail!("this binary was built without local-model support")
     }
 }
@@ -340,7 +352,7 @@ pub struct LocalEncoder {
 
 impl LocalEncoder {
     #[cfg(feature = "local-model")]
-    fn encode(&mut self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
+    fn encode(&mut self, texts: &[String], query: bool, batch: usize) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -350,7 +362,7 @@ impl LocalEncoder {
             .iter()
             .map(|text| format!("{prefix}{text}"))
             .collect::<Vec<_>>();
-        let vectors = self.runtime.embed(inputs, Some(16))?;
+        let vectors = self.runtime.embed(inputs, Some(batch))?;
         ensure!(
             vectors.len() == texts.len(),
             "encoder returned an unexpected number of vectors"
@@ -362,16 +374,25 @@ impl LocalEncoder {
     }
 
     #[cfg(not(feature = "local-model"))]
-    fn encode(&mut self, _texts: &[String], _query: bool) -> Result<Vec<Vec<f32>>> {
+    fn encode(&mut self, _texts: &[String], _query: bool, _batch: usize) -> Result<Vec<Vec<f32>>> {
         match self._unavailable {}
     }
 
     pub fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        self.encode(texts, false)
+        self.encode(texts, false, 16)
+    }
+
+    /// Encode passage text in larger batches for a corpus rebuild.
+    pub fn embed_passages(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.encode(texts, false, 64)
+    }
+
+    pub fn embed_queries(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.encode(texts, true, 64)
     }
 
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        self.encode(&[text.to_owned()], true)?
+        self.encode(&[text.to_owned()], true, 1)?
             .pop()
             .context("encoder returned no query vector")
     }

@@ -7,6 +7,7 @@
 - Say when an exact scan stops at its match cap, and keep private documents out of snippets, suggestions, and totals.
 - Skip dense vectors and extra analyzers during import, and report them. NFCorpus's 3633 documents and five lexical totals matched Elasticsearch.
 - Record catalog autocomplete latency and how soon a write can be searched.
+- Append 2000 log events while searches run. This pass kept an exact count at 3763 events per second.
 - Serve a local HTTP catalog with exact filters, permissions, cursors, and event retention.
 - Embed new writes with a pinned local model and switch that model together with every stored vector.
 - Reclaim expired cursors, expire automatic event streams, and compact the lexical index on a one-minute maintenance pass.

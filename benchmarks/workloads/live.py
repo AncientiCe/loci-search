@@ -226,7 +226,60 @@ def measure_followups(server):
     delay_ms = round((time.perf_counter() - started) * 1000, 3)
     if not visible["hits"] or visible["hits"][0]["id"] != "signal":
         raise RuntimeError(f"written document was not searchable: {visible}")
-    return {"catalog_warm_search": warm, "catalog_autocomplete": autocomplete, "write_to_search_ms": delay_ms}
+    ingest = measure_log_ingest(server)
+    return {
+        "catalog_warm_search": warm,
+        "catalog_autocomplete": autocomplete,
+        "write_to_search_ms": delay_ms,
+        "log_ingest_during_search": ingest,
+    }
+
+
+def measure_log_ingest(server, events=2000):
+    server.api("PUT", "/v1/indexes/ingest", {
+        "model": "lexical",
+        "stream": {"timestamp": "time", "rollover_seconds": 3600, "retention_seconds": 86400, "automatic": False},
+    })
+    stop = threading.Event()
+    samples = []
+    errors = []
+
+    def reader():
+        while not stop.is_set():
+            started = time.perf_counter()
+            try:
+                page = server.api("POST", "/v1/indexes/ingest/search", {"text": "", "limit": 1})
+                samples.append(round((time.perf_counter() - started) * 1000, 3))
+                if page.get("exact", True) is not True:
+                    errors.append("inexact total during ingest")
+            except RuntimeError as error:
+                errors.append(str(error))
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    started = time.perf_counter()
+    batch = []
+    for number in range(events):
+        batch.append({"op": "upsert", "document": {
+            "id": f"e{number}", "revision": "1", "text": "error burst", "fields": {"time": number},
+        }})
+        if len(batch) == 200:
+            server.api("POST", "/v1/indexes/ingest/bulk", {"operations": batch})
+            batch = []
+    if batch:
+        server.api("POST", "/v1/indexes/ingest/bulk", {"operations": batch})
+    elapsed = time.perf_counter() - started
+    stop.set()
+    thread.join()
+    page = server.api("POST", "/v1/indexes/ingest/search", {"text": "error", "limit": 1})
+    if page["total"] != events or page.get("exact", True) is not True or errors:
+        raise RuntimeError(f"ingest drifted: total={page['total']} errors={errors[:3]}")
+    return {
+        "events": events,
+        "events_per_second": round(events / elapsed, 1),
+        "search_p50_ms": percentile(samples, 0.50),
+        "search_p95_ms": percentile(samples, 0.95),
+    }
 
 
 def percentile(values, fraction):

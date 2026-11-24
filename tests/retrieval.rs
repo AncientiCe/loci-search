@@ -1,8 +1,9 @@
 use loci_search::{
-    fixture,
+    Embedding, Normalization, Passage, Query, fixture,
     index::{Engine, ingest, ingest_compact},
     ranking::{RegionalRerank, SearchConfig, SearchResult, Strategy},
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn lexical_rescue_finds_the_misplaced_identifier_within_routing_budgets() -> anyhow::Result<()> {
@@ -186,4 +187,96 @@ fn graph_candidates_add_nearest_passages_outside_the_routing_budget() -> anyhow:
     };
     assert_eq!(ids(&again), ids(&after));
     Ok(())
+}
+
+#[test]
+fn a_passage_reached_through_two_regions_appears_once() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db = dir.path().join("two-regions.sqlite");
+    let dimensions = 8;
+    let embedding = Embedding {
+        model_revision: "two-region-v1".into(),
+        dimensions,
+        normalization: Normalization::L2,
+    };
+    let axis = |hot: usize| {
+        let mut vector = vec![0.0; dimensions];
+        vector[hot] = 1.0;
+        vector
+    };
+    let left = axis(0);
+    let right = axis(1);
+    let bridge = left
+        .iter()
+        .zip(&right)
+        .map(|(left, right)| (left + right) * 0.5)
+        .collect::<Vec<_>>();
+    let mut passages = Vec::new();
+    for index in 0..16 {
+        passages.push(addressed("left", index, left.clone()));
+        passages.push(addressed("right", index, right.clone()));
+    }
+    passages.push(addressed("bridge", 0, bridge.clone()));
+    // Leaf size keeps each axis, plus the bridge on one side, in a single leaf.
+    // A smaller leaf lets the bridge drag one centroid outside the membership margin.
+    ingest(&db, passages, embedding.clone(), 17)?;
+    let memberships = rusqlite::Connection::open(&db)?.query_row(
+        "SELECT COUNT(DISTINCT memberships.region)
+         FROM memberships
+         JOIN artifacts ON artifacts.rowid = memberships.artifact
+         WHERE artifacts.id = 'bridge-0'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    assert!(
+        memberships >= 2,
+        "the bridge passage has {memberships} region memberships"
+    );
+
+    let mut engine = Engine::open(&db)?;
+    let query = Query {
+        id: "bridge".into(),
+        text: "bridge".into(),
+        embedding: embedding.clone(),
+        vector: bridge,
+        group: "general".into(),
+        judgments: BTreeMap::new(),
+        required: Vec::new(),
+    };
+    let mut config = SearchConfig::default();
+    config.limit = 20;
+    config.max_regions = 32;
+    config.max_chunks = 64;
+    let result = engine.search(&query, Strategy::Regional, &config)?;
+    let shown = result
+        .hits
+        .iter()
+        .filter(|hit| hit.source.id == "bridge-0")
+        .count();
+    assert_eq!(shown, 1, "a shared passage is one hit");
+    let routes = &result
+        .hits
+        .iter()
+        .find(|hit| hit.source.id == "bridge-0")
+        .expect("bridge hit")
+        .routes;
+    assert!(
+        routes.len() >= 2,
+        "both routes stay visible, found {}",
+        routes.len()
+    );
+    Ok(())
+}
+
+fn addressed(side: &str, index: usize, vector: Vec<f32>) -> Passage {
+    Passage {
+        id: format!("{side}-{index}"),
+        document: side.into(),
+        revision: "1".into(),
+        start: 0,
+        end: 1,
+        text: format!("{side} passage {index}"),
+        metadata: BTreeMap::new(),
+        vector,
+    }
 }

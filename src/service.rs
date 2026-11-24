@@ -154,6 +154,15 @@ pub(super) fn valid_index(name: &str) -> bool {
 }
 
 pub fn serve(bind: SocketAddr, data: &FsPath, credentials: Option<&FsPath>) -> Result<()> {
+    listen(bind, data, credentials, None)
+}
+
+fn listen(
+    bind: SocketAddr,
+    data: &FsPath,
+    credentials: Option<&FsPath>,
+    bound: Option<std::sync::mpsc::Sender<SocketAddr>>,
+) -> Result<()> {
     ensure!(
         bind.ip().is_loopback() || credentials.is_some(),
         "external binds require --credentials"
@@ -217,7 +226,11 @@ pub fn serve(bind: SocketAddr, data: &FsPath, credentials: Option<&FsPath>) -> R
         .build()?
         .block_on(async move {
             let listener = tokio::net::TcpListener::bind(bind).await?;
-            eprintln!("Listening on http://{}", listener.local_addr()?);
+            let addr = listener.local_addr()?;
+            eprintln!("Listening on http://{addr}");
+            if let Some(bound) = bound {
+                let _ = bound.send(addr);
+            }
             tokio::spawn(async move {
                 let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
                 timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -495,4 +508,93 @@ async fn suggest(
         let snap=s.catalog.snapshot(&name)?;
         Ok(json!({"generation":snap.generation,"suggestions":snap.suggest(&req.prefix,req.limit,&principals)?}))
     }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::TransactionBehavior;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
+
+    fn code(result: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> u16 {
+        match result {
+            Ok(response) => response.status().as_u16(),
+            Err(ureq::Error::StatusCode(status)) => status,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[test]
+    fn a_full_worker_queue_rejects_the_overflow_and_keeps_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_path_buf();
+        let (sender, receiver) = mpsc::channel();
+        let data_for_server = data.clone();
+        std::thread::spawn(move || {
+            listen(
+                "127.0.0.1:0".parse().unwrap(),
+                &data_for_server,
+                None,
+                Some(sender),
+            )
+            .unwrap();
+        });
+        let addr = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        let base = format!("http://{addr}");
+        let agent = ureq::Agent::new_with_defaults();
+        assert_eq!(code(agent.get(format!("{base}/health")).call()), 200);
+        assert_eq!(
+            code(
+                agent
+                    .put(format!("{base}/v1/indexes/logs"))
+                    .send_json(json!({"model": "lexical"}))
+            ),
+            200
+        );
+        assert_eq!(
+            code(agent
+                .post(format!("{base}/v1/indexes/logs/bulk"))
+                .send_json(json!({"operations":[{"op":"upsert","document":{"id":"kept","revision":"1","text":"kept event","fields":{"time":1}}}]}))),
+            200
+        );
+
+        let mut db = rusqlite::Connection::open(data.join("catalog.sqlite")).unwrap();
+        let held = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        std::thread::scope(|scope| {
+            for _ in 0..64 {
+                let statuses = Arc::clone(&statuses);
+                let url = format!("{base}/v1/indexes/logs/search");
+                scope.spawn(move || {
+                    let status = code(
+                        ureq::Agent::new_with_defaults()
+                            .post(&url)
+                            .send_json(json!({"text": "kept", "limit": 1})),
+                    );
+                    statuses.lock().unwrap().push(status);
+                });
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline && !statuses.lock().unwrap().contains(&429) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            drop(held);
+        });
+        let statuses = statuses.lock().unwrap().clone();
+        assert!(
+            statuses.contains(&429),
+            "expected a rejected overflow, saw {statuses:?}"
+        );
+
+        let mut response = agent
+            .post(format!("{base}/v1/indexes/logs/search"))
+            .send_json(json!({"text": "kept", "limit": 1}))
+            .unwrap();
+        let page: Value = response.body_mut().read_json().unwrap();
+        assert_eq!(page["total"], json!(1));
+        assert_eq!(page["hits"][0]["id"], json!("kept"));
+    }
 }

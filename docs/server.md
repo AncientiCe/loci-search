@@ -26,6 +26,8 @@ loci model-install multilingual-e5-small --data loci-data --source /path/to/veri
 
 `PUT /v1/indexes/{name}/model` rebuilds every embedded document vector and publishes the new model in one generation. Documents with `"embed": false` stay lexical. A reader opened on the previous generation keeps that generation. A bulk write that started against the old model is rejected.
 
+When every worker is already busy, the service answers `429` and does not start that request. A request that already holds a worker still commits or rolls back as one generation.
+
 The service runs maintenance about once a minute. It deletes expired cursor pages, merges lexical segments, and expires events on indexes whose stream policy has `"automatic": true`. `POST /v1/indexes/{name}/expire` applies the same retention cutoff at a caller-supplied timestamp, which is how the log fixture checks a fixed day.
 
 ```sh

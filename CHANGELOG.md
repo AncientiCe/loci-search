@@ -6,6 +6,7 @@
 - Updating one document replaces its text and vector together and leaves every other document's vector in place. Deleting it removes that vector.
 - The fixture scorecard records each workload's query latency, catalog disk, process working set, and the time to restart and find the saved document again.
 - A fresh data directory can import one Markdown note and highlight a sentence from it. The Rust test fails if that takes ten minutes or longer.
+- Each in-flight regional search keeps its own scratch buffers, and a saved graph is rebuilt when the vectors change.
 - An interrupted model upgrade leaves the published generation and its vectors in place.
 - A full day of one event per minute can be appended while searches stay exact, including a late event in an earlier hour.
 - A document can set `embed` to false on a model index. It stays in lexical search and is left out of embedding and model rebuilds.

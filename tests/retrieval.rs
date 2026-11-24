@@ -270,6 +270,36 @@ fn a_passage_reached_through_two_regions_appears_once() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_replaced_vector_does_not_reuse_the_saved_graph() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db = dir.path().join("graph.sqlite");
+    let (embedding, passages, queries) = fixture::generate(64)?;
+    ingest(&db, passages, embedding.clone(), 16)?;
+    let mut engine = Engine::open(&db)?;
+    let mut config = SearchConfig {
+        graph_candidates: Some(8),
+        limit: 5,
+        ..SearchConfig::default()
+    };
+    engine.search(&queries[0], Strategy::Regional, &config)?;
+    let saved = std::fs::read(engine.graph_path())?;
+    let (_, mut changed, _) = fixture::generate(64)?;
+    for passage in &mut changed {
+        if let Some(value) = passage.vector.first_mut() {
+            *value += 1.0;
+        }
+    }
+    ingest(&db, changed, embedding, 16)?;
+    std::fs::write(engine.graph_path(), &saved)?;
+    let mut engine = Engine::open(&db)?;
+    config.graph_candidates = Some(8);
+    engine.search(&queries[0], Strategy::Regional, &config)?;
+    let rebuilt = std::fs::read(engine.graph_path())?;
+    assert_ne!(rebuilt, saved);
+    Ok(())
+}
+
 fn addressed(side: &str, index: usize, vector: Vec<f32>) -> Passage {
     Passage {
         id: format!("{side}-{index}"),

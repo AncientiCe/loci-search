@@ -43,8 +43,8 @@ pub(crate) struct RegionalIndex {
     rescue_norms: Vec<f64>,
     regional_norms: Vec<f64>,
     quantized: Quantized,
-    /// Corpus-sized buffers reused across queries; only touched entries are reset.
-    scratch: Mutex<Scratch>,
+    /// One buffer set per in-flight search. Queries do not share or wait on one scratch.
+    scratch: Mutex<Vec<Scratch>>,
 }
 
 struct Scratch {
@@ -142,12 +142,35 @@ impl RegionalIndex {
             rescue_norms,
             regional_norms,
             quantized: Quantized::build(&engine.vectors),
-            scratch: Mutex::new(Scratch {
+            scratch: Mutex::new(vec![Scratch {
                 first_visit: vec![UNVISITED; engine.ids.len()],
                 lexical: vec![0.0; engine.ids.len()],
                 seen_terms: vec![0; engine.ids.len()],
-            }),
+            }]),
         })
+    }
+
+    fn checkout(&self, passages: usize) -> Scratch {
+        let mut scratch = self
+            .scratch
+            .lock()
+            .expect("regional scratch")
+            .pop()
+            .unwrap_or_else(|| Scratch {
+                first_visit: vec![UNVISITED; passages],
+                lexical: vec![0.0; passages],
+                seen_terms: vec![0; passages],
+            });
+        if scratch.first_visit.len() != passages {
+            scratch.first_visit.resize(passages, UNVISITED);
+            scratch.lexical.resize(passages, 0.0);
+            scratch.seen_terms.resize(passages, 0);
+        }
+        scratch
+    }
+
+    fn recycle(&self, scratch: Scratch) {
+        self.scratch.lock().expect("regional scratch").push(scratch);
     }
 
     pub fn rescue(
@@ -308,12 +331,12 @@ pub(crate) fn select(
         .iter()
         .map(|(term, &idf)| (index.postings.get(term), idf))
         .collect::<Vec<_>>();
-    let mut scratch = index.scratch.lock().expect("regional scratch");
+    let mut held = index.checkout(engine.ids.len());
     let Scratch {
         first_visit,
         lexical,
         seen_terms,
-    } = &mut *scratch;
+    } = &mut held;
     let mut routes = Routes::default();
     let mut expanded = Vec::new();
     let mut nearest = Vec::new();
@@ -449,7 +472,7 @@ pub(crate) fn select(
         lexical[id] = 0.0;
         seen_terms[id] = 0;
     }
-    drop(scratch);
+    index.recycle(held);
     retain_top(&mut matches, config.depth, |a, b| {
         b.1.total_cmp(&a.1).then(a.0.cmp(&b.0))
     });

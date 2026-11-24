@@ -335,13 +335,13 @@ impl Engine {
     /// Load the persisted batched HNSW graph, building and saving it if needed.
     pub(crate) fn prepare_dense_graph(&mut self) -> Result<()> {
         if self.dense_graph.is_none() {
-            let manifest = serde_json::to_string(&self.manifest)?;
+            let identity = self.graph_identity()?;
             let path = self.graph_path();
-            let graph = match Graph::load(&path, &manifest)? {
+            let graph = match Graph::load(&path, &identity)? {
                 Some(graph) => graph,
                 None => {
                     let graph = Graph::build_batched(&self.vectors);
-                    graph.save(&path, &manifest)?;
+                    graph.save(&path, &identity)?;
                     graph
                 }
             };
@@ -356,12 +356,26 @@ impl Engine {
 
     /// Rebuild and save the batched HNSW graph, replacing any saved copy.
     pub fn build_dense_graph(&mut self) -> Result<PathBuf> {
-        let manifest = serde_json::to_string(&self.manifest)?;
+        let identity = self.graph_identity()?;
         let path = self.graph_path();
         let graph = Graph::build_batched(&self.vectors);
-        graph.save(&path, &manifest)?;
+        graph.save(&path, &identity)?;
         self.dense_graph = Some(graph);
         Ok(path)
+    }
+
+    /// Saved graphs are tied to these vectors, not only to the passage count.
+    fn graph_identity(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(serde_json::to_vec(&self.manifest)?);
+        for vector in &self.vectors {
+            hasher.update((vector.len() as u32).to_le_bytes());
+            for value in vector {
+                hasher.update(value.to_le_bytes());
+            }
+        }
+        Ok(format!("{:x}", hasher.finalize()))
     }
 
     pub(crate) fn nearest_dense(

@@ -427,3 +427,59 @@ fn a_long_question_borrows_distinctive_terms_from_the_best_hit() -> Result<()> {
     assert_eq!(exact.hits[0].id, "misc");
     Ok(())
 }
+
+#[test]
+fn an_uncommitted_write_is_absent_after_reopen() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("catalog.sqlite");
+    let catalog = Catalog::open(&path)?;
+    catalog.create_index("docs")?;
+    catalog.bulk("docs", &[doc("a", "1", "kept", json!({}), &[])])?;
+    {
+        let mut db = rusqlite::Connection::open(&path)?;
+        let tx = db.transaction()?;
+        tx.execute(
+            "INSERT INTO loci_documents(idx,id,revision,body,readers) VALUES('docs','ghost','1','{\"id\":\"ghost\",\"revision\":\"1\",\"text\":\"nope\",\"fields\":{},\"readers\":[]}','[]')",
+            [],
+        )?;
+        drop(tx);
+    }
+    let catalog = Catalog::open(&path)?;
+    assert!(catalog.snapshot("docs")?.document("ghost", &[])?.is_none());
+    assert_eq!(
+        catalog.snapshot("docs")?.document("a", &[])?.unwrap().text,
+        "kept"
+    );
+    Ok(())
+}
+
+#[test]
+fn readers_see_one_generation_while_a_write_commits() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = std::sync::Arc::new(Catalog::open(dir.path().join("catalog"))?);
+    catalog.create_index("docs")?;
+    catalog.bulk("docs", &[doc("a", "1", "one", json!({}), &[])])?;
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let catalog = catalog.clone();
+            scope.spawn(move || {
+                for _ in 0..30 {
+                    let page = catalog
+                        .search("docs", &request(json!({"text": "one"})), &[])
+                        .unwrap();
+                    assert!(page.hits.iter().all(|hit| hit.id == "a"));
+                    assert!(page.generation >= 1);
+                }
+            });
+        }
+        catalog
+            .bulk("docs", &[doc("a", "2", "one more", json!({}), &[])])
+            .unwrap();
+    });
+    let current = catalog.snapshot("docs")?;
+    let document = current.document("a", &[])?.unwrap();
+    assert_eq!(document.revision, "2");
+    assert_eq!(document.text, "one more");
+    assert!(catalog.snapshot_at("docs", 1).is_err());
+    Ok(())
+}

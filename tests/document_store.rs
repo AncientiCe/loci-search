@@ -633,6 +633,60 @@ fn a_failed_model_upgrade_leaves_the_previous_generation() -> Result<()> {
 }
 
 #[test]
+fn an_interrupted_model_upgrade_keeps_the_published_model() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("catalog.sqlite");
+    let catalog = Catalog::open(&path)?;
+    catalog.create_index_with_settings("docs", &json!({"model": "lexical"}))?;
+    catalog.bulk("docs", &[doc("a", "1", "text", json!({}), &[])])?;
+    let generation = catalog.snapshot("docs")?.generation;
+    let codec = Embedding {
+        model_revision: "codec-1".into(),
+        dimensions: 2,
+        normalization: Normalization::L2,
+    };
+    let prepared = vec![PreparedDocument {
+        id: "a".into(),
+        revision: "1".into(),
+        passages: vec![EncodedPassage {
+            start: 0,
+            end: 4,
+            vector: vec![1.0, 0.0],
+        }],
+    }];
+    let published =
+        catalog.publish_model("docs", generation, "bge-small-en-v1.5", &codec, &prepared)?;
+    let reader = catalog.snapshot("docs")?;
+    {
+        let mut db = rusqlite::Connection::open(&path)?;
+        let tx = db.transaction()?;
+        tx.execute("DELETE FROM loci_vectors WHERE idx='docs'", [])?;
+        tx.execute(
+            "UPDATE loci_indexes SET settings=json_set(settings,'$.model','multilingual-e5-small'), generation=generation+1 WHERE name='docs'",
+            [],
+        )?;
+        let during = reader.search(&request(json!({"text": "text"})), &[])?;
+        assert_eq!(during.generation, published);
+        assert_eq!(during.total, 1);
+        drop(tx);
+    }
+    assert_eq!(reader.settings()?["model"], json!("bge-small-en-v1.5"));
+    let catalog = Catalog::open(&path)?;
+    let after = catalog.snapshot("docs")?;
+    assert_eq!(after.generation, published);
+    assert_eq!(after.settings()?["model"], json!("bge-small-en-v1.5"));
+    let stored = after.documents(&[])?;
+    let (passages, missing) = after.encoded_passages(&stored, &codec)?;
+    assert!(missing.is_empty());
+    assert_eq!(passages.len(), 1);
+    assert_eq!(passages[0].vector, vec![1.0, 0.0]);
+    let page = catalog.search("docs", &request(json!({"text": "text"})), &[])?;
+    assert_eq!(page.generation, published);
+    assert_eq!(page.hits[0].id, "a");
+    Ok(())
+}
+
+#[test]
 fn a_skipped_document_stays_lexical_through_a_model_upgrade() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let catalog = Catalog::open(dir.path().join("catalog"))?;

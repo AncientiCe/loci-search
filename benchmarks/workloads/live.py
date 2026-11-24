@@ -61,6 +61,28 @@ class Server:
         if isinstance(value, Exception):
             raise value
         self.url = value
+        self._watch_memory()
+
+    def _watch_memory(self):
+        if getattr(self, "_watch_started", False):
+            return
+        self._watch_started = True
+        self._watch_stop = threading.Event()
+        self.peak_working_set = 0
+
+        def sample():
+            while not self._watch_stop.is_set():
+                process = self.process
+                if process is not None and process.poll() is None:
+                    size = working_set_bytes(process.pid)
+                    if size:
+                        self.peak_working_set = max(self.peak_working_set, size)
+                self._watch_stop.wait(0.05)
+
+        threading.Thread(target=sample, daemon=True).start()
+
+    def reset_peak(self):
+        self.peak_working_set = 0
 
     def stop(self):
         if self.process is not None:
@@ -282,6 +304,90 @@ def measure_log_ingest(server, events=2000):
     }
 
 
+def catalog_bytes(data):
+    total = 0
+    for name in ("catalog.sqlite", "catalog.sqlite-wal", "catalog.sqlite-shm"):
+        path = data / name
+        if path.exists():
+            total += path.stat().st_size
+    return total
+
+
+def working_set_bytes(pid):
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            counters = Counters()
+            counters.cb = ctypes.sizeof(Counters)
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                return None
+            return int(counters.WorkingSetSize)
+        finally:
+            kernel.CloseHandle(handle)
+    status = Path(f"/proc/{pid}/status")
+    if not status.exists():
+        return None
+    for line in status.read_text(encoding="utf-8").splitlines():
+        if line.startswith("VmRSS:"):
+            return int(line.split()[1]) * 1024
+    return None
+
+
+def workload_latency(rows):
+    elapsed = [row["elapsed_ms"] for row in rows if row["passed"]]
+    if not elapsed:
+        return None
+    warm = elapsed[1:] or elapsed
+    return {
+        "cold_ms": elapsed[0],
+        "p50_ms": percentile(warm, 0.50),
+        "p95_ms": percentile(warm, 0.95),
+        "p99_ms": percentile(warm, 0.99),
+        "cases": len(elapsed),
+    }
+
+
+def recover(server, name):
+    probes = {
+        "catalog": ("admin", {"text": "LMP-210", "limit": 1}, "p2"),
+        "knowledge": ("admin", {"text": "VLC-019", "limit": 1}, "tickets/138.md"),
+        "records": ("sales", {"text": "b2", "limit": 1}, "b2"),
+        "logs": ("admin", {"filter": {"op": "eq", "field": "trace", "value": "trace-42"}, "limit": 5}, None),
+    }
+    principal, body, expected = probes[name]
+    server.stop()
+    started = time.perf_counter()
+    server.start()
+    page = server.api("POST", f"/v1/indexes/{name}/search", body, principal)
+    elapsed = round((time.perf_counter() - started) * 1000, 3)
+    if page.get("total", 0) < 1 or (expected and page["hits"][0]["id"] != expected):
+        raise RuntimeError(f"{name} did not recover its saved document: {page}")
+    if name == "logs" and page["total"] != 2:
+        raise RuntimeError(f"logs recovery count changed: {page['total']}")
+    return elapsed
+
+
 def percentile(values, fraction):
     if not values:
         return None
@@ -366,11 +472,23 @@ def main():
                 server.start()
                 passed = failed = 0
                 timings = []
+                resources = {}
                 for name in ([args.workload] if args.workload else validate.WORKLOADS):
+                    before = catalog_bytes(server.data)
+                    server.reset_peak()
                     ok, bad, rows = run_workload(server, name, args.model, output)
                     passed += ok
                     failed += bad
                     timings.extend(rows)
+                    entry = {
+                        "disk_bytes": catalog_bytes(server.data),
+                        "disk_growth_bytes": catalog_bytes(server.data) - before,
+                        "peak_working_set_bytes": server.peak_working_set,
+                        "latency": workload_latency(rows),
+                    }
+                    if ok and not bad:
+                        entry["recovery_ms"] = recover(server, name)
+                    resources[name] = entry
                 print(f"{passed} live cases passed, {failed} failed; knowledge model={args.model}")
                 followups = measure_followups(server) if not args.workload or args.workload == "catalog" else None
                 if args.scorecard:
@@ -378,7 +496,7 @@ def main():
                     args.scorecard.parent.mkdir(parents=True, exist_ok=True)
                     args.scorecard.write_text(json.dumps({
                         "kind": "workload-fixtures",
-                        "note": "One sequential pass on a fresh process. These tiny fixtures are not a load, latency, or 1M relevance gate.",
+                        "note": "One sequential pass on a fresh process. These tiny fixtures are not a load, latency, or 1M relevance gate. Disk is the shared catalog file. Recovery restarts the process and searches the saved fixture.",
                         "model": args.model,
                         "cases": len(timings),
                         "passed": passed,
@@ -386,6 +504,7 @@ def main():
                         "p50_ms": percentile(elapsed, 0.50),
                         "p95_ms": percentile(elapsed, 0.95),
                         "max_ms": max(elapsed) if elapsed else None,
+                        "resources": resources,
                         "followups": followups,
                         "rows": timings,
                     }, indent=2) + "\n", encoding="utf-8")

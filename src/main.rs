@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+mod service;
 use clap::{Args, Parser, Subcommand};
 use loci_search::{
     Embedding, Passage, Query,
@@ -30,6 +31,47 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
+    /// Run the native HTTP search service.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:7707")]
+        bind: std::net::SocketAddr,
+        #[arg(long, default_value = "loci-data")]
+        data: PathBuf,
+        /// JSON file containing scoped bearer credentials.
+        #[arg(long)]
+        credentials: Option<PathBuf>,
+    },
+    /// Import Markdown, plain text, or JSONL records into a running server.
+    Import {
+        #[arg(long)]
+        index: String,
+        #[arg(long, default_value = "http://127.0.0.1:7707")]
+        url: String,
+        files: Vec<PathBuf>,
+    },
+    /// Explicitly install a verified local model pack from upstream or a local folder.
+    ModelInstall {
+        #[arg(value_enum)]
+        model: loci_search::embedding::ModelPack,
+        #[arg(long, default_value = "loci-data")]
+        data: PathBuf,
+        #[arg(long)]
+        source: Option<PathBuf>,
+    },
+    /// Make a consistent, standalone copy of the document catalog.
+    Backup {
+        #[arg(long, default_value = "loci-data")]
+        data: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Restore a catalog backup into a fresh data directory.
+    Restore {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        data: PathBuf,
+    },
     /// Build and save the batched global HNSW graph next to an index.
     GraphBuild {
         #[arg(long)]
@@ -237,6 +279,26 @@ impl From<Settings> for SearchConfig {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Serve {
+            bind,
+            data,
+            credentials,
+        } => service::serve(bind, &data, credentials.as_deref())?,
+        Command::Import { index, url, files } => service::import(&url, &index, &files)?,
+        Command::ModelInstall {
+            model,
+            data,
+            source,
+        } => {
+            println!(
+                "{}",
+                model
+                    .install(&data.join("models"), source.as_deref())?
+                    .display()
+            );
+        }
+        Command::Backup { data, out } => service::backup(&data, &out)?,
+        Command::Restore { input, data } => service::restore(&input, &data)?,
         Command::GraphBuild { db } => {
             let mut engine = Engine::open(&db)?;
             let started = std::time::Instant::now();

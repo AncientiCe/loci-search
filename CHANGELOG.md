@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Serve a local HTTP catalog with exact filters, permissions, cursors, and event retention.
+- Embed new writes with a pinned local model and switch that model together with every stored vector.
+- Reclaim expired cursors, expire automatic event streams, and compact the lexical index on a one-minute maintenance pass.
+
 ## [0.1.0]
 
 First public preview of Loci Search, a local Rust CLI and library for explainable hybrid retrieval over precomputed embeddings.

@@ -1,0 +1,48 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Loci Search Console</title>
+<style>
+:root{color-scheme:light dark;font:16px/1.5 "Inter",system-ui,sans-serif;background:#17231f;color:#eaf2ec}
+body{max-width:62rem;margin:3rem auto;padding:0 1.4rem}
+h1,h2{font-weight:550;letter-spacing:-.035em}label{display:block;margin:.8rem 0 .25rem}
+input,textarea,button,select{font:inherit;border:1px solid #60776c;border-radius:.35rem;padding:.5rem;background:#20332a;color:inherit}
+button{cursor:pointer;margin:.3rem .3rem .3rem 0}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #fbc879}
+textarea{width:100%;box-sizing:border-box}pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+a{color:#a3dfc4}details,article{border-top:1px solid #587064;padding:.7rem 0}.source{font: .86rem ui-monospace,monospace;color:#b7d9c7}
+</style>
+<main><h1>Loci Search</h1>
+<details><summary>Connection and import</summary>
+<label for="token">Bearer credential</label><input id="token" type="password" autocomplete="off">
+<label for="model">Index model</label><select id="model"><option>lexical</option><option>bge-small-en-v1.5</option><option>multilingual-e5-small</option></select>
+<button id="create">Create index</button>
+<label for="data">Documents (one JSON object per line)</label><textarea rows="4" id="data">{"id":"recovery","revision":"1","text":"After rotating the gateway credential, reconnect clients with a fresh lease. Error NOVA17 indicates that a lease expired."}
+{"id":"billing","revision":"1","text":"Monthly invoices are available in the billing workspace."}</textarea>
+<button id="load">Import documents</button></details>
+<form id="search"><label for="index">Index</label><input id="index" required value="handbook">
+<label for="query">Search</label><input id="query" size="45" value="expired lease" required> <button>Search</button></form>
+<p role="status" id="status"></p><section id="results" aria-label="Results"></section>
+<details><summary>Query response and routing work</summary><pre id="trace"></pre></details><a href="/openapi.json">HTTP API specification</a></main>
+<script>
+const el=id=>document.getElementById(id);
+const index=()=>'/v1/indexes/'+encodeURIComponent(el('index').value);
+async function api(method,path,body){
+ const headers={'Content-Type':'application/json'};
+ if(el('token').value) headers.Authorization='Bearer '+el('token').value;
+ const response=await fetch(path,{method,headers,body:JSON.stringify(body)});
+ const text=await response.text();
+ if(!response.ok) throw Error(text);
+ return JSON.parse(text);
+}
+async function action(fn){el('status').textContent='Working…';try{await fn()}catch(e){el('status').textContent=e.message}}
+el('create').onclick=()=>action(async()=>{const model=el('model').value;await api('PUT',index(),model==='lexical'?{}:{model});el('status').textContent='Index ready.'});
+el('load').onclick=()=>action(async()=>{
+ const operations=el('data').value.split('\n').filter(x=>x.trim()).map(x=>({op:'upsert',document:JSON.parse(x)}));
+ const r=await api('POST',index()+'/bulk',{operations});el('status').textContent=r.changed+' changes committed in generation '+r.generation+'.';
+});
+el('search').onsubmit=e=>{e.preventDefault();action(async()=>{
+ const r=await api('POST',index()+'/search',{text:el('query').value});el('trace').textContent=JSON.stringify(r,null,2);
+ el('results').replaceChildren();
+ for(const hit of r.hits){const d=typeof hit.document==='object'?hit.document:hit,a=document.createElement('article'),s=document.createElement('div'),p=document.createElement('p');s.className='source';s.textContent=(typeof hit.document==='string'?hit.document:d.id)+' · '+d.revision+(hit.start===undefined?'':' · bytes '+hit.start+'–'+hit.end);p.textContent=d.text;a.append(s,p);el('results').append(a);}
+ el('status').textContent=r.hits.length+' results shown · generation '+r.generation;
+})};
+</script></html>
+

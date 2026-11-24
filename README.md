@@ -15,11 +15,11 @@ Loci Search is a local Rust CLI and library for hybrid retrieval over text and p
 
 ## Highlights
 
-- **One file, no server.** Passages, embeddings, and the index live in a single SQLite database. Ingest replaces the snapshot atomically.
+- **One SQLite catalog.** Passages, embeddings, and the retrieval index live in SQLite. Ingest replaces a retrieval snapshot atomically. `loci serve` adds a local HTTP catalog on top of that store.
 - **Hybrid by default.** BM25 and cosine similarity are fused and reranked over a bounded candidate pool.
 - **Semantic region routing.** Searches visit a budgeted set of regions instead of the whole corpus, with global lexical rescue and an optional HNSW graph to recover what routing misses.
 - **Explainable hits.** Every result carries its document, revision, and source span, plus its lexical, vector, and global lexical ranks and the route that reached it.
-- **Bring your own embeddings.** Loci never calls an embedding model. You supply passage and query vectors from any embedding model.
+- **Caller-supplied or local embeddings.** The retrieval CLI takes passage and query vectors from any model. The HTTP service can also embed with a pinned local model pack. See [Running the service](docs/server.md).
 - **Built-in evaluation.** `bench` reports Recall@k, nDCG, and warm latency percentiles on judged queries or a deterministic synthetic fixture.
 
 ## Quick start

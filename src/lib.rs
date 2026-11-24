@@ -1,11 +1,13 @@
 pub mod bench;
 pub mod elastic;
+pub mod embedding;
 pub mod fixture;
 mod graph;
 pub mod index;
 pub mod profile;
 pub mod ranking;
 mod regional;
+pub mod store;
 mod topology;
 
 use anyhow::{Result, ensure};

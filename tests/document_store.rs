@@ -881,3 +881,114 @@ fn a_full_day_replays_under_search_and_keeps_exact_hours() -> Result<()> {
     }
     Ok(())
 }
+
+fn passage(id: &str, revision: &str, end: u64, vector: Vec<f32>) -> PreparedDocument {
+    PreparedDocument {
+        id: id.into(),
+        revision: revision.into(),
+        passages: vec![EncodedPassage {
+            start: 0,
+            end,
+            vector,
+        }],
+    }
+}
+
+#[test]
+fn one_document_update_replaces_its_vector_and_leaves_the_other() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let catalog = Catalog::open(dir.path().join("catalog"))?;
+    catalog.create_index_with_settings("docs", &json!({"model": "lexical"}))?;
+    catalog.bulk(
+        "docs",
+        &[
+            doc("left", "1", "alpha", json!({}), &[]),
+            doc("right", "1", "bravo", json!({}), &[]),
+        ],
+    )?;
+    let generation = catalog.snapshot("docs")?.generation;
+    let codec = Embedding {
+        model_revision: "codec-1".into(),
+        dimensions: 2,
+        normalization: Normalization::L2,
+    };
+    catalog.publish_model(
+        "docs",
+        generation,
+        "bge-small-en-v1.5",
+        &codec,
+        &[
+            passage("left", "1", 5, vec![1.0, 0.0]),
+            passage("right", "1", 5, vec![0.0, 1.0]),
+        ],
+    )?;
+    let reader = catalog.snapshot("docs")?;
+    catalog.bulk_encoded(
+        "docs",
+        &[doc("left", "2", "gamma", json!({}), &[])],
+        None,
+        "bge-small-en-v1.5",
+        &codec,
+        &[passage("left", "2", 5, vec![0.5, 0.5])],
+    )?;
+    assert_eq!(
+        reader.search(&request(json!({"text": "alpha"})), &[])?.hits[0].id,
+        "left"
+    );
+    assert_eq!(
+        catalog
+            .search("docs", &request(json!({"text": "alpha"})), &[])?
+            .total,
+        0
+    );
+    assert_eq!(
+        catalog
+            .search("docs", &request(json!({"text": "gamma"})), &[])?
+            .hits[0]
+            .id,
+        "left"
+    );
+    let snapshot = catalog.snapshot("docs")?;
+    let stored = snapshot.documents(&[])?;
+    let (passages, missing) = snapshot.encoded_passages(&stored, &codec)?;
+    assert!(missing.is_empty());
+    let vector = |id: &str| {
+        passages
+            .iter()
+            .find(|passage| passage.document == id)
+            .map(|passage| passage.vector.clone())
+    };
+    assert_eq!(vector("left"), Some(vec![0.5, 0.5]));
+    assert_eq!(vector("right"), Some(vec![0.0, 1.0]));
+    drop(snapshot);
+
+    catalog.bulk_encoded(
+        "docs",
+        &[Mutation::Delete { id: "left".into() }],
+        None,
+        "bge-small-en-v1.5",
+        &codec,
+        &[],
+    )?;
+    assert_eq!(
+        catalog
+            .search("docs", &request(json!({"text": "gamma"})), &[])?
+            .total,
+        0
+    );
+    assert_eq!(
+        catalog
+            .search("docs", &request(json!({"text": "bravo"})), &[])?
+            .hits[0]
+            .id,
+        "right"
+    );
+    let snapshot = catalog.snapshot("docs")?;
+    let stored = snapshot.documents(&[])?;
+    let (passages, missing) = snapshot.encoded_passages(&stored, &codec)?;
+    assert!(missing.is_empty());
+    assert_eq!(passages.len(), 1);
+    assert_eq!(passages[0].document, "right");
+    assert_eq!(passages[0].vector, vec![0.0, 1.0]);
+    Ok(())
+}

@@ -24,7 +24,7 @@ loci model-install bge-small-en-v1.5 --data loci-data
 loci model-install multilingual-e5-small --data loci-data --source /path/to/verified-pack
 ```
 
-`PUT /v1/indexes/{name}/model` rebuilds every embedded document vector and publishes the new model in one generation. Documents with `"embed": false` stay lexical. A reader opened on the previous generation keeps that generation. An upgrade that stops before commit leaves that generation and its vectors in place. A bulk write that started against the old model is rejected.
+`PUT /v1/indexes/{name}/model` rebuilds every embedded document vector and publishes the new model in one generation. Documents with `"embed": false` stay lexical. A reader opened on the previous generation keeps that generation. An upgrade that stops before commit leaves that generation and its vectors in place. A bulk write that started against the old model is rejected. A later bulk write replaces only the documents in that batch: their text and vectors change together, and every other document keeps the vector it already has. Deleting a document removes its vector.
 
 When every worker is already busy, the service answers `429` and does not start that request. A request that already holds a worker still commits or rolls back as one generation.
 

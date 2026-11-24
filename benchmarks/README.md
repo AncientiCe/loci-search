@@ -47,6 +47,12 @@ The latency columns summarize all recorded warm sequential queries. The [machine
 | HotpotQA 1M, HNSW candidates | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 25.57 ms | 37.33 ms |
 | HotpotQA 1M, 12k budget and HNSW, fresh Elasticsearch | 1,000,000 | 320 × 3 | Loci regional | 89.38% | 19.31 ms | 31.01 ms |
 | HotpotQA 1M, 12k budget and HNSW, fresh Elasticsearch | 1,000,000 | 320 × 3 | Elasticsearch | 90.00% | 27.45 ms | 41.20 ms |
+| HotpotQA 1M, BGE raw text | 1,000,000 | 320 × 3 | SQLite BM25 | 84.53% | 780.97 ms | 1255.60 ms |
+| HotpotQA 1M, BGE raw text | 1,000,000 | 320 × 3 | Loci global | 90.47% | 791.24 ms | 1279.39 ms |
+| HotpotQA 1M, BGE raw text | 1,000,000 | 320 × 3 | Loci regional | 89.06% | 39.54 ms | 50.66 ms |
+| HotpotQA 1M, BGE raw text | 1,000,000 | 320 × 3 | Elasticsearch | 90.47% | 31.29 ms | 37.17 ms |
+
+The BGE raw-text rows use the same `bge-small-en-v1.5` vectors on both engines and include query embedding time. Embedding itself was 8.64 ms at p50 and 12.17 ms at p95. On the held-out queries, regional search was 0.017 nDCG@10 and 1.41 percentage points of Recall@100 behind Elasticsearch, and its p95 was higher. Global search matched Elasticsearch recall and stayed within 0.003 nDCG@10, with a p95 of 1.28 s because lexical rescue scored most of the corpus.
 
 ## Loci preparation timings
 

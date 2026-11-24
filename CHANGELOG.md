@@ -8,6 +8,7 @@
 - A fresh data directory can import one Markdown note and highlight a sentence from it. The Rust test fails if that takes ten minutes or longer.
 - Each in-flight regional search keeps its own scratch buffers, and a saved graph is rebuilt when the vectors change.
 - Runnable Rust examples cover knowledge, catalog, records, and logs.
+- Operator notes record the catalog file, the worker cap, and the published million-passage graph size.
 - An interrupted model upgrade leaves the published generation and its vectors in place.
 - A full day of one event per minute can be appended while searches stay exact, including a late event in an earlier hour.
 - A document can set `embed` to false on a model index. It stays in lexical search and is left out of embedding and model rebuilds.

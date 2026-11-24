@@ -64,6 +64,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/rehearse_cutover.py --binary "./target/$env:TARGET/release/$env:EXECUTABLE"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/rehearse_install.py --binary "./target/$env:TARGET/release/$env:EXECUTABLE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   package:
     name: Package and audit
     runs-on: ubuntu-latest

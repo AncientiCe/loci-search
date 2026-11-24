@@ -158,22 +158,36 @@ class Mapping:
         elif "properties" not in raw:
             _, item = one(raw, "mapping export")
             raw = item["mappings"]
-        only(raw, ["properties", "_meta"], "mapping")
+        unknown = set(raw) - {"properties", "_meta", "dynamic"}
+        check(not unknown, f"mapping: unsupported keys {sorted(unknown)}")
         properties = raw.get("properties", {})
         check(isinstance(properties, dict), "mapping.properties must be an object")
         self.types = {}
         self.aliases = {}
         self.arrays = set(arrays)
         self.text_field = text_field
+        self.omitted = []
+        self.omitted_fields = set()
+        if "dynamic" in raw:
+            self.omitted.append("dynamic")
         for name, field in properties.items():
-            only(field, ["type", "fields"], f"mapping.{name}")
+            check(isinstance(field, dict), f"mapping.{name}: expected an object")
             kind = field.get("type")
-            check(kind in TYPES, f"mapping.{name}: unsupported type {kind!r}")
+            if kind not in TYPES:
+                self.omitted.append(f"{name}:{kind}")
+                self.omitted_fields.add(name)
+                continue
+            extra = set(field) - {"type", "fields"}
+            check("normalizer" not in extra, f"mapping.{name}: unsupported options {sorted(extra)}")
+            if extra:
+                self.omitted.append(f"{name} options {sorted(extra)}")
             self.types[name] = TYPES[kind]
             for subname, subfield in field.get("fields", {}).items():
-                check(kind == "text" and subfield == {"type": "keyword"},
-                      f"mapping.{name}.{subname}: unsupported multi-field settings")
-                self.aliases[name + "." + subname] = name
+                if kind == "text" and isinstance(subfield, dict) and subfield.get("type") == "keyword":
+                    check(set(subfield) == {"type"}, f"mapping.{name}.{subname}: unsupported multi-field settings")
+                    self.aliases[name + "." + subname] = name
+                else:
+                    self.omitted.append(f"{name}.{subname}")
         check(self.arrays <= self.types.keys(), "array field is not mapped")
         check(text_field is None or self.types.get(text_field) in ("text", "keyword"),
               "the selected text field must be a mapped text or keyword field")
@@ -219,8 +233,9 @@ class Mapping:
             return {"op": "delete", "id": ident}
         record = hit.get("_source")
         check(isinstance(record, dict), "expected object _source")
-        check(not record.keys() - self.types.keys(), "unmapped source fields: " +
-              ", ".join(sorted(record.keys() - self.types.keys())))
+        unknown = set(record) - self.types.keys() - self.omitted_fields
+        check(not unknown, "unmapped source fields: " + ", ".join(sorted(unknown)))
+        record = {key: value for key, value in record.items() if key not in self.omitted_fields}
         readers = []
         if args.readers_field:
             readers = record.get(args.readers_field)

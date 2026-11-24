@@ -53,6 +53,23 @@ class Migration(unittest.TestCase):
         self.assertEqual(["valid", "error", "error"], [r["status"] for r in rows])
         self.assertEqual("b", rows[1]["id"])
 
+    def test_dense_vectors_and_extra_analyzers_are_reported_and_skipped(self):
+        raw = {"dynamic": "strict", "properties": {
+            "text": {"type": "text", "analyzer": "standard", "fields": {"english": {"type": "text", "analyzer": "english"}}},
+            "embedding": {"type": "dense_vector", "dims": 1024},
+        }}
+        mapping = m.Mapping(raw, "text")
+        self.assertEqual(mapping.types, {"text": "text"})
+        self.assertIn("embedding:dense_vector", mapping.omitted)
+        self.assertIn("text.english", mapping.omitted)
+        self.assertIn("text options ['analyzer']", mapping.omitted)
+        class Args:
+            source_index = None
+            readers_field = None
+        document = mapping.doc(hit("a", text="alpha", embedding=[0.1, 0.2]), Args())
+        self.assertEqual(document["document"]["text"], "alpha")
+        self.assertNotIn("embedding", document["document"]["fields"])
+
     def test_overrides_and_unrecognized_features_are_explicit(self):
         for bad in [{"type": "nested"}, {"type": "keyword", "normalizer": "lowercase"},
                     {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 8}}}]:

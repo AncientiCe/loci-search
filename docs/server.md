@@ -40,8 +40,6 @@ Import sends batches to a running server. The named index must already exist. It
 
 The console at `/` and the clients under `clients/` call this API. The embedded example is `cargo run --locked --example embedded`.
 
-`python tools/rehearse_cutover.py --binary target/debug/loci` imports two documents, checks an ordered query, restores a backup into an empty directory, and checks that a second restore refuses to overwrite it.
-
-`python tools/rehearse_install.py --binary target/debug/loci` starts from an empty data directory, imports one Markdown note, and checks that search highlights a sentence from that note. The clock starts with the built binary and the run fails if that takes ten minutes or longer. `benchmarks/workloads/live.py --scorecard` records fixture disk, working set, and restart time on the machine that runs it.
+`python tools/rehearse_cutover.py --binary target/debug/loci` imports two documents, checks an ordered query, restores a backup into an empty directory, and checks that a second restore refuses to overwrite it. That script stays in Python because it replays an Elasticsearch export. Product checks run in Rust: `cargo test --bin loci a_fresh_catalog_highlights_an_imported_note_within_ten_minutes` starts from an empty data directory, imports one Markdown note, and checks that search highlights a sentence from that note within ten minutes. `benchmarks/workloads/live.py --scorecard` records fixture disk, working set, and restart time.
 
 The supported release is the latest version published from an annotated tag. `main` can move ahead of that release. An exact search that stops at `match_limit` sets `exact` to false and `limit_reason` to `match_limit` instead of presenting a partial total as complete. The default cap is 100000 authorized matches.

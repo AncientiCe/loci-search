@@ -597,4 +597,59 @@ mod tests {
         assert_eq!(page["total"], json!(1));
         assert_eq!(page["hits"][0]["id"], json!("kept"));
     }
+
+    #[test]
+    fn a_fresh_catalog_highlights_an_imported_note_within_ten_minutes() {
+        const QUOTE: &str = "Restore the encrypted vault from its backup before the next rotation.";
+        let started = Instant::now();
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let note = dir.path().join("recovery.md");
+        std::fs::write(
+            &note,
+            format!("Operators keep one copy offline.\n\n{QUOTE}\n"),
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let data_for_server = data.clone();
+        std::thread::spawn(move || {
+            listen(
+                "127.0.0.1:0".parse().unwrap(),
+                &data_for_server,
+                None,
+                Some(sender),
+            )
+            .unwrap();
+        });
+        let addr = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        let base = format!("http://{addr}");
+        let agent = ureq::Agent::new_with_defaults();
+        assert_eq!(
+            code(
+                agent
+                    .put(format!("{base}/v1/indexes/manuals"))
+                    .send_json(json!({"model": "lexical"}))
+            ),
+            200
+        );
+        import(&base, "manuals", std::slice::from_ref(&note)).unwrap();
+        let mut response = agent
+            .post(format!("{base}/v1/indexes/manuals/search"))
+            .send_json(json!({"text": "encrypted vault", "limit": 1, "highlight": true}))
+            .unwrap();
+        let page: Value = response.body_mut().read_json().unwrap();
+        let hit = &page["hits"][0];
+        let text = hit["text"].as_str().unwrap();
+        assert!(text.contains(QUOTE));
+        let spans = page["highlights"][hit["id"].as_str().unwrap()]
+            .as_array()
+            .unwrap();
+        assert!(!spans.is_empty());
+        for span in spans {
+            let start = span["start"].as_u64().unwrap() as usize;
+            let end = span["end"].as_u64().unwrap() as usize;
+            assert!(QUOTE.contains(&text[start..end]), "{}", &text[start..end]);
+        }
+        assert!(started.elapsed() < Duration::from_secs(600));
+    }
 }

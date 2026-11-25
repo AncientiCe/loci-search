@@ -1,5 +1,7 @@
 # Benchmark history
 
+Every recorded comparison, newest first, including the runs where Loci lost or tied. For the results that describe the current release, see [Benchmark results](benchmark.md).
+
 The latency columns summarize all recorded warm sequential queries. The [machine-readable history](history.json) includes per-pass timings, dev trials, index preparation, and exact settings. See the [reproduction instructions](reproduce.md) for the corpus and launch steps.
 
 ## Raw-text verdict against Elasticsearch

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400" role="img" aria-labelledby="title desc">
+<title id="title">Loci Search</title>
+<desc id="desc">Self-hosted hybrid search in Rust with Elasticsearch-level retrieval quality. Against Elasticsearch 8.19: quality tied on HotpotQA 1M and FiQA, p95 latency 25% lower on HotpotQA raw text and 72% lower on FiQA, and 5.4 times the queries per second on FiQA at 16 clients.</desc>
+<rect width="1280" height="400" rx="16" fill="#0e1528"/>
+<rect x="56" y="70" width="64" height="5" rx="2" fill="#5ee0b5"/>
+<text x="56" y="150" fill="#f4f6fb" font-size="64" font-weight="700" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">Loci Search</text>
+<text x="56" y="198" fill="#c9d0e2" font-size="26" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">Self-hosted hybrid search in Rust</text>
+<text x="56" y="246" fill="#9aa4bf" font-size="18" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">Elasticsearch-level retrieval quality.</text>
+<text x="56" y="272" fill="#9aa4bf" font-size="18" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">Lower latency, more queries per second.</text>
+<text x="56" y="330" fill="#6f7a96" font-size="14" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace">Rust  /  SQLite  /  BM25 + HNSW  /  HTTP service</text>
+<rect x="700" y="58" width="250" height="118" rx="12" fill="#16213a" stroke="#2c3a5c"/>
+<text x="720" y="108" fill="#5ee0b5" font-size="34" font-weight="700" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">= quality</text>
+<text x="720" y="136" fill="#e6e9f2" font-size="15" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">Recall@100 and nDCG@10</text>
+<text x="720" y="157" fill="#9aa4bf" font-size="13" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">tied on HotpotQA 1M and FiQA</text>
+<rect x="970" y="58" width="250" height="118" rx="12" fill="#16213a" stroke="#2c3a5c"/>
+<text x="990" y="108" fill="#5ee0b5" font-size="34" font-weight="700" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">−25% p95</text>
+<text x="990" y="136" fill="#e6e9f2" font-size="15" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">HotpotQA 1M, raw text</text>
+<text x="990" y="157" fill="#9aa4bf" font-size="13" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">25.4 ms vs 33.8 ms</text>
+<rect x="700" y="196" width="250" height="118" rx="12" fill="#16213a" stroke="#2c3a5c"/>
+<text x="720" y="246" fill="#5ee0b5" font-size="34" font-weight="700" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">−72% p95</text>
+<text x="720" y="274" fill="#e6e9f2" font-size="15" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">FiQA, precomputed vectors</text>
+<text x="720" y="295" fill="#9aa4bf" font-size="13" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">4.2 ms vs 15.1 ms</text>
+<rect x="970" y="196" width="250" height="118" rx="12" fill="#16213a" stroke="#2c3a5c"/>
+<text x="990" y="246" fill="#5ee0b5" font-size="34" font-weight="700" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">5.4×</text>
+<text x="990" y="274" fill="#e6e9f2" font-size="15" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">queries per second</text>
+<text x="990" y="295" fill="#9aa4bf" font-size="13" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">FiQA, 16 concurrent clients</text>
+<text x="700" y="352" fill="#6f7a96" font-size="13" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">Against Elasticsearch 8.19 on Linux, both over HTTP, same vectors and reranker.</text>
+</svg>

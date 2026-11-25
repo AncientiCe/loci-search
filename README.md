@@ -7,26 +7,70 @@
 [![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: research preview](https://img.shields.io/badge/status-research%20preview-lightgrey.svg)
 
-![Loci Search. Explainable hybrid search in Rust with SQLite and semantic routing.](docs/images/loci-search.png)
+![Loci Search: self-hosted hybrid search in Rust. Against Elasticsearch 8.19, retrieval quality is tied, p95 latency is 25% lower on HotpotQA 1M and 72% lower on FiQA, and throughput is 5.4 times higher on FiQA at 16 clients.](docs/images/hero.svg)
 
-Loci Search is a local Rust CLI and library for hybrid retrieval over text and precomputed embeddings. It combines BM25 and vector similarity, routes searches through semantic regions, and explains which evidence and ranking signals surfaced each hit.
+Loci Search is a self-hosted search engine and Rust library. It keeps documents in SQLite, searches them with a keyword index and a vector graph, and returns each hit with its document, revision, and source span. On two public retrieval benchmarks it finds the same results as Elasticsearch and answers faster.
 
-[Benchmark history](benchmarks/README.md) · [Reproduce the benchmarks](benchmarks/reproduce.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+[Benchmark results](benchmarks/benchmark.md) · [Benchmark history](benchmarks/benchmark_history.md) · [Running the service](docs/server.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+
+## Same quality as Elasticsearch, faster
+
+Both engines ran on the same Linux machine, answered over HTTP, used identical vectors and the same reranker, and were measured on held-out queries after their settings were frozen on development queries.
+
+![p95 latency at equal quality. HotpotQA 1M raw text: Loci 25.4 ms, Elasticsearch 33.8 ms. HotpotQA 1M precomputed vectors: Loci 13.0 ms, Elasticsearch 20.3 ms. FiQA: Loci 4.2 ms, Elasticsearch 15.1 ms.](docs/images/latency.svg)
+
+![Recall@100 and nDCG@10 for Loci and Elasticsearch on HotpotQA 1M and FiQA. Every difference is within its 95% interval of zero.](docs/images/quality.svg)
+
+![Queries per second at 1, 4, 8, and 16 concurrent clients. HotpotQA 1M raw text: Loci 377, Elasticsearch 260 at 16 clients. FiQA: Loci 2,577, Elasticsearch 473 at 16 clients.](docs/images/throughput.svg)
+
+| Corpus | Recall@100, Loci / Elasticsearch | nDCG@10, Loci / Elasticsearch | p95 latency, Loci / Elasticsearch | Queries per second at 16 clients |
+| --- | --- | --- | --- | --- |
+| HotpotQA, 1M passages, raw text | 90.78% / 90.63% | 0.822 / 0.823 | 25.4 / 33.8 ms | 377 / 260 |
+| FiQA, 57,638 passages, precomputed vectors | 74.00% / 74.21% | 0.425 / 0.426 | 4.2 / 15.1 ms | 2,577 / 473 |
+
+No quality difference is statistically significant. The [benchmark results](benchmarks/benchmark.md) list the setup, paired confidence intervals, every concurrency level, and the commands to reproduce them.
+
+## How a search runs
+
+![A query runs a BM25 keyword search for the top 60 passages and an HNSW graph search for the 150 nearest neighbours. Reciprocal rank fusion keeps 200 candidates, and a reranker weighted 92% cosine similarity and 8% term coverage returns the top hits with their document, revision, and source span.](docs/images/hybrid-flow.svg)
+
+Hybrid search, the default for text search in `loci serve`, builds two global candidate lists and merges them:
+
+1. **Keyword search.** BM25 over in-memory postings, pruned with MaxScore, returns the best 60 passages.
+2. **Vector search.** An HNSW graph saved beside the index returns the 150 nearest passages.
+3. **Fusion.** Reciprocal rank fusion keeps 200 candidates and reserves slots for keyword hits.
+4. **Reranking.** Each candidate is scored 92% on cosine similarity and 8% on the IDF-weighted share of query terms it contains.
+
+The settings were chosen on HotpotQA and FiQA development queries by a rule fixed before measuring: the fastest p95 within 0.2 points of the best Recall@100. The whole path runs in one process with no external services, which is where the latency and throughput lead comes from.
+
+## How we got here
+
+Loci started as an experiment in the method of loci, the memory-palace technique: give every passage several addresses in a map of semantic regions, then search only the regions near a query. The benchmarks were run in the open, and the [history](benchmarks/benchmark_history.md) keeps every result, including the ones that did not favour Loci.
+
+- **Regional search matched Elasticsearch but did not beat it.** On HotpotQA 1M with raw text, Loci tied Elasticsearch on quality, and Elasticsearch had the lower p95, 34.3 ms against 37.5 ms.
+- **The quality lead came from the reranker.** Earlier gains over Elasticsearch disappeared once Elasticsearch's candidates used the same cosine-heavy reranker. Any engine can use it.
+- **The regions could not rule anything out.** An exact branch-and-bound over the regions skipped no passage at all, because each region spans about 52° around its centre in 384 dimensions. Even scoring regions by their centre alone still scored 29% of the corpus.
+- **Filters gave no edge.** At equal quality, filtered Elasticsearch was as fast or faster, and below 1% of the corpus a plain scan of the allowed passages won.
+- **Removing the regional scan made Loci faster.** The keyword search and the vector graph found everything the regions found. Without the regional scan, Loci kept its quality, halved its startup time, nearly halved its memory, and pulled ahead of Elasticsearch.
+
+That configuration became hybrid search in 0.4.0. Regional search is still available with `"mode": "regional"` and `--strategy regional`.
 
 ## Highlights
 
-- **One SQLite catalog.** Passages, embeddings, and the retrieval index live in SQLite. Ingest replaces a retrieval snapshot atomically. `loci serve` adds a local HTTP catalog on top of that store.
-- **Hybrid by default.** BM25 and cosine similarity are fused and reranked over a bounded candidate pool.
-- **Semantic region routing.** Searches visit a budgeted set of regions instead of the whole corpus, with global lexical rescue and an optional HNSW graph to recover what routing misses.
-- **Explainable hits.** Every result carries its document, revision, and source span, plus its lexical, vector, and global lexical ranks and the route that reached it.
-- **Caller-supplied or local embeddings.** The retrieval CLI takes passage and query vectors from any model. The HTTP service can also embed with a pinned local model pack. See [Running the service](docs/server.md).
-- **Built-in evaluation.** `bench` reports Recall@k, nDCG, and warm latency percentiles on judged queries or a deterministic synthetic fixture.
+- **One SQLite catalog.** Documents, revisions, embeddings, and the retrieval index live in SQLite. Writes commit as one generation, and readers keep the generation they opened.
+- **Hybrid search by default.** BM25 and an HNSW graph, fused and reranked, with no external search or vector service.
+- **Explainable hits.** Every result carries its document, revision, and source span, its keyword, vector, and graph ranks, and its score.
+- **Local or caller-supplied embeddings.** `loci serve` embeds with a pinned local model pack (`bge-small-en-v1.5` or `multilingual-e5-small`). The CLI and library accept vectors from any model.
+- **Filters, facets, and permissions.** Exact search supports filters, sorting, facets, aggregations, and per-reader visibility. Semantic search sees only the documents its reader may read.
+- **Built-in evaluation.** `loci bench` reports Recall@k, nDCG, latency percentiles, and throughput, and compares against Elasticsearch on the same data.
 
 ## Quick start
 
 Install Rust 1.95 or newer and a C compiler to build bundled SQLite. On Windows with the MSVC Rust toolchain, install the Visual Studio C++ Build Tools.
 
-From the repository root, generate a small synthetic corpus, ingest it, and run an explained query. The example uses no downloads beyond the Rust dependencies and needs no embedding service.
+### Search a synthetic corpus from the CLI
+
+From the repository root, generate a small corpus, ingest it, and run an explained query. This needs no downloads beyond the Rust dependencies and no embedding service.
 
 ```sh
 cargo run --locked --release -- fixture --chunks 128 --out runs/example-data
@@ -52,7 +96,25 @@ Each explained hit shows where the passage came from and why it ranked:
 }
 ```
 
-Run `cargo run --locked -- --help` to see all commands, or follow [Use your own corpus](#use-your-own-corpus) for the input formats.
+The CLI searches with regional search by default. Add `--strategy hybrid` to run the same search as `loci serve`; it builds the HNSW graph next to the index on first use.
+
+### Run the search service
+
+```sh
+loci model-install bge-small-en-v1.5 --data loci-data
+loci serve --data loci-data
+```
+
+In another terminal, create an index, add documents, and search them:
+
+```sh
+curl -X PUT localhost:7707/v1/indexes/manuals -H 'Content-Type: application/json' -d '{"model":"bge-small-en-v1.5"}'
+curl -X POST localhost:7707/v1/indexes/manuals/bulk -H 'Content-Type: application/json' \
+  -d '{"operations":[{"op":"upsert","document":{"id":"vault","revision":"1","text":"The encrypted vault rotates its master key every ninety days.","fields":{}}}]}'
+curl -X POST localhost:7707/v1/indexes/manuals/search -H 'Content-Type: application/json' -d '{"text":"how often is the vault key rotated","limit":3}'
+```
+
+[Running the service](docs/server.md) covers search modes, credentials, imports, backups, and model upgrades. The API is described in [openapi.json](docs/openapi.json), and Python and TypeScript clients are in [clients](clients/).
 
 ## Install
 
@@ -66,31 +128,18 @@ The installed binary is named `loci`.
 
 | Command | Purpose |
 | --- | --- |
+| `serve` | Run the HTTP search service over a data directory |
+| `model-install` | Install a verified local embedding model pack |
+| `import` | Send Markdown, text, or JSONL records to a running server |
+| `backup`, `restore` | Copy the document catalog and restore it into a fresh directory |
 | `fixture` | Generate deterministic passages, embeddings, and relevance judgments |
-| `ingest` | Atomically replace the index with a complete JSONL snapshot |
-| `search` | Search with a query JSON file containing a precomputed embedding |
-| `bench` | Compare global and regional retrieval on judged queries or a generated fixture |
-| `graph-build` | Build and save the global HNSW graph next to an index |
-| `profile` | Profile regional query phases with the settings from a prior comparison |
-| `rescue-dev`, `recall-dev` | Tune and audit retrieval on development queries only |
-
-## How regional search works
-
-![Regional search routes a text and vector query into budgeted regional search, global lexical rescue, and optional HNSW. Candidates are fused and reranked. Ranked hits carry document, revision, and span.](docs/images/retrieval-flow.png)
-
-Each passage and embedding is stored once in SQLite. A passage can belong to up to three semantic regions. Routing follows the region hierarchy and shared-membership edges, with configurable limits on the regions, passages, and postings it visits. Global lexical rescue and an optional HNSW graph contribute candidates beyond the regions visited. Explained hits show source provenance and the ranking signals used.
-
-## Benchmark results
-
-![Held-out Recall@100 and warm p95 latency for Loci regional search and tuned Elasticsearch on HotpotQA 1M, FiQA, and NFCorpus.](docs/images/benchmarks.svg)
-
-**Hybrid search is faster than Elasticsearch at equal quality on HotpotQA 1M and FiQA.** Hybrid search, the default for `loci serve` text search since 0.4.0, runs a bounded keyword search, the HNSW graph, and a reranker. Both engines answered over loopback HTTP on Linux, with the same vectors and the same reranker, Elasticsearch's heap locked, and no swap. On HotpotQA 1M with raw query text, Recall@100 was 90.78% for Loci and 90.63% for Elasticsearch; Loci's p95 was 25.35 ms against 33.78 ms, and it served 1.45 times the queries per second at 16 clients. On FiQA with precomputed vectors, Recall@100 was 74.00% against 74.21%; Loci's p95 was 4.20 ms against 15.06 ms, and it served 5.4 times the queries per second. No quality difference is significant. Quality leads over Elasticsearch came only from the reranker, which Elasticsearch candidates can use too. See [the HotpotQA comparison](benchmarks/README.md#hybrid-search-over-http-without-swap), [the FiQA comparison](benchmarks/README.md#fiqa-hybrid-search-over-http), and [the earlier raw-text verdict](benchmarks/README.md#raw-text-verdict-against-elasticsearch), where regional search matched Elasticsearch but did not beat it.
-
-The rest of this section records earlier runs. In the recorded held-out HotpotQA run on one million passages, Loci regional search reached **89.38% Recall@100** at **31.01 ms warm p95**. Tuned Elasticsearch in the same run reached **90.00%** at **41.20 ms warm p95**. The paired recall difference was −0.63 percentage points with a 95% interval of −2.03 to +0.78. On FiQA and NFCorpus, settings were selected on development queries and frozen before scoring the official test queries.
-
-These are historical single-machine, sequential results, and the three corpora were measured with different engine versions. Earlier configurations on the same corpora had different recall and latency trade-offs. [Methods, settings, and full history](benchmarks/README.md)
-
-The [reproduction guide](benchmarks/reproduce.md) covers the deterministic synthetic fixture and the FiQA, NFCorpus, and HotpotQA comparisons. Download external data and embeddings separately under their upstream terms.
+| `ingest` | Replace a retrieval index atomically with a JSONL snapshot |
+| `embed` | Encode passages and queries with an installed local model |
+| `search` | Search an index with a query file, regional or hybrid |
+| `graph-build` | Build and save the HNSW graph next to an index |
+| `bench` | Compare strategies, and optionally Elasticsearch, on judged queries |
+| `bench-serve` | Serve a frozen benchmark plan over HTTP for server-to-server comparisons |
+| `pruning-dev`, `filter-dev`, `rescue-dev`, `recall-dev`, `profile` | Experiment and tuning tools that run on development queries only |
 
 ## Use your own corpus
 
@@ -108,9 +157,10 @@ cargo run --locked --release -- bench --db runs/example.sqlite --queries runs/ex
 
 Loci is a single-node research preview, and its formats and APIs may change before 1.0.
 
-- Ingestion replaces the full index snapshot. There are no incremental updates yet.
-- Both passage and query embeddings come from the caller.
-- Benchmarks measure warm, sequential queries on one machine. Concurrent throughput is not yet measured.
+- The comparison with Elasticsearch covers two corpora on one machine. It measures retrieval only, not indexing speed or features that Loci does not have.
+- Hybrid search weights cosine similarity at 92%. An exact identifier that the embedding model does not represent well can rank below passages that are semantically close. Exact search (`"mode": "exact"`) and regional search weigh keyword matches more heavily.
+- There is no replication or sharding. One process serves one data directory.
+- The CLI `ingest` command replaces a whole retrieval snapshot. The HTTP service applies incremental writes.
 
 ## Contributing
 

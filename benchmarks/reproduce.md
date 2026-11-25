@@ -1,6 +1,6 @@
 # Reproduce the benchmarks
 
-Run these commands from the repository root. See the [project quick start](../README.md#quick-start) for a smaller synthetic dataset and the [benchmark history](README.md) for recorded results.
+Run these commands from the repository root. See the [project quick start](../README.md#quick-start) for a smaller synthetic dataset and the [current results](benchmark.md) and the [benchmark history](benchmark_history.md).
 
 ## Reproduce the 100,000-chunk benchmark
 
@@ -16,7 +16,7 @@ The command builds a deterministic 100,000-passage synthetic corpus and runs 32 
 
 The benchmark compares [SQLite FTS5 BM25](https://www.sqlite.org/fts5.html), global BM25 plus HNSW, and budgeted regional BM25 plus cosine. The hybrids share reciprocal rank fusion and a reranker that uses query-term coverage and exact cosine. The regional engine reserves candidate slots for global lexical rescue. Budget parameters include `--max-regions`, `--max-chunks`, `--max-postings`, `--rescue`, and `--routing-ms`. The time budget applies to routing and is checked cooperatively. SQLite global lexical work is represented by returned results and elapsed time because FTS5 does not expose postings visited.
 
-The built-in fixture checks behavior and reproducibility. Use a held-out judged corpus and a tuned external control for a quality or latency decision. This benchmark measures warm sequential latency. The recorded results below correspond to earlier engine and dependency versions. See the [benchmark history](README.md) and Git history for follow-up runs.
+The built-in fixture checks behavior and reproducibility. Use a held-out judged corpus and a tuned external control for a quality or latency decision. This benchmark measures warm sequential latency. The recorded results below correspond to earlier engine and dependency versions. See the [benchmark history](benchmark_history.md) and Git history for follow-up runs.
 
 Add `--embed-model bge-small-en-v1.5 --model-cache <data>/models` to encode each query from its text and include that time in every measured sample. The index manifest and the query files must already be that model. Without those flags the report stays on the precomputed vectors. A Cohere index does not match either local pack, so the command refuses it.
 

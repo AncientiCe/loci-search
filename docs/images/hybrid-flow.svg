@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" width="960" height="330" role="img" aria-labelledby="title desc">
+<title id="title">Hybrid search query path</title>
+<desc id="desc">A query runs a BM25 keyword search over in-memory postings for the top 60 passages and an HNSW graph search for the 150 nearest neighbours. Reciprocal rank fusion keeps 200 candidates, and a reranker weighted 92% cosine similarity and 8% term coverage returns the top hits with their document, revision, and source span.</desc>
+<style>
+  svg { --bg:#fcfcfb; --t1:#0b0b0b; --t2:#52514e; --t3:#77766f; --grid:#e4e3df; --line:#c9c8c2; --s1:#2a78d6; --s2:#eb6834; --box:#f3f2ef; }
+  @media (prefers-color-scheme: dark) {
+    svg { --bg:#1a1a19; --t1:#f0efec; --t2:#c3c2b7; --t3:#9a998f; --grid:#363633; --line:#4a4a46; --s1:#3987e5; --s2:#d95926; --box:#242423; }
+  }
+  text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .bg { fill: var(--bg); }
+  .t1 { fill: var(--t1); } .t2 { fill: var(--t2); } .t3 { fill: var(--t3); }
+  .s1 { fill: var(--s1); } .s2 { fill: var(--s2); }
+  .ls1 { stroke: var(--s1); } .ls2 { stroke: var(--s2); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--line); stroke-width: 1; }
+  .box { fill: var(--box); stroke: var(--line); stroke-width: 1; }
+  .accent { fill: var(--box); stroke: var(--s1); stroke-width: 1.5; }
+  .arrow { stroke: var(--t3); stroke-width: 1.5; fill: none; }
+  .ttl { font-size: 20px; font-weight: 600; }
+  .sub { font-size: 13px; }
+  .h { font-size: 14px; font-weight: 600; }
+  .s { font-size: 12px; }
+  .v { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .vb { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .lg { font-size: 13px; }
+</style>
+<rect class="bg" width="960" height="330" rx="12"/>
+<text class="t1 ttl" x="28" y="42">How a hybrid search runs</text>
+<text class="t2 sub" x="28" y="64">Two global candidate lists, one fusion step, one reranker. Every hit keeps its document, revision, and source span.</text><rect class="box" x="28" y="140" width="150" height="86" rx="10"/>
+<text class="t1 h" x="42" y="164">Query</text><text class="t2 s" x="42" y="184">text in, or a vector</text><text class="t2 s" x="42" y="201">from any model</text><rect class="accent" x="232" y="92" width="200" height="86" rx="10"/>
+<text class="t1 h" x="246" y="116">Keyword search</text><text class="t2 s" x="246" y="136">BM25 with MaxScore</text><text class="t2 s" x="246" y="153">over in-memory postings</text><text class="t2 s" x="246" y="170">top 60 passages</text><rect class="accent" x="232" y="196" width="200" height="86" rx="10"/>
+<text class="t1 h" x="246" y="220">HNSW graph</text><text class="t2 s" x="246" y="240">150 nearest neighbours</text><text class="t2 s" x="246" y="257">search width 128</text><text class="t2 s" x="246" y="274">saved beside the index</text><rect class="box" x="486" y="140" width="190" height="86" rx="10"/>
+<text class="t1 h" x="500" y="164">Fuse</text><text class="t2 s" x="500" y="184">reciprocal rank fusion</text><text class="t2 s" x="500" y="201">200 candidates, keyword</text><text class="t2 s" x="500" y="218">hits keep their slots</text><rect class="accent" x="730" y="140" width="202" height="86" rx="10"/>
+<text class="t1 h" x="744" y="164">Rerank</text><text class="t2 s" x="744" y="184">92% cosine similarity</text><text class="t2 s" x="744" y="201">8% IDF term coverage</text><text class="t2 s" x="744" y="218">top k with citations</text><path class="arrow" d="M178 183 C205 183 205 135 232 135"/>
+<path class="arrow" d="M225 130 L232 135 L225 140"/><path class="arrow" d="M178 183 C205 183 205 239 232 239"/>
+<path class="arrow" d="M225 234 L232 239 L225 244"/><path class="arrow" d="M432 135 C459 135 459 183 486 183"/>
+<path class="arrow" d="M479 178 L486 183 L479 188"/><path class="arrow" d="M432 239 C459 239 459 183 486 183"/>
+<path class="arrow" d="M479 178 L486 183 L479 188"/><path class="arrow" d="M676 183 L730 183"/>
+<path class="arrow" d="M723 178 L730 183 L723 188"/>
+</svg>

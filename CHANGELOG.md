@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## [0.4.1]
+
+Hybrid search ranks exact identifiers first again. Queries such as `LMP-201` or `ERR_CONNECTION_RESET` now rerank on their keyword match, while questions keep the reranker that tied Elasticsearch. With this release's `loci serve` settings on both engines, FiQA held out the same result: tied quality, 4.73 ms p95 against Elasticsearch's 17.02 ms, and 5.8 times the queries per second at 16 clients. HotpotQA results are unchanged. See the [benchmark results](https://github.com/AncientiCe/loci-search/blob/main/benchmarks/benchmark.md).
+
 - Hybrid search reranks queries that look like identifiers (at most four words, one a letter-digit code such as `LMP-201`, an underscore name such as `ERR_CONNECTION_RESET`, or a number of three or more digits) with 65% term coverage, 25% cosine, and 10% rank fusion instead of 92% cosine, through the new `SearchConfig.identifier_rerank`. An exact code whose embedding points elsewhere now ranks first again. No HotpotQA query matches the rule; on FiQA, with the rule on both engines, Loci reached 74.00% Recall@100 and 0.424 nDCG@10 against Elasticsearch's 74.21% and 0.425, at 4.73 ms p95 against 17.02 ms, and 2,727 queries per second at 16 clients against 473.
 - `loci search --strategy hybrid` starts from the `loci serve` hybrid settings, and `--graph-candidates`, `--rescue-max-scored`, and `--regional-rerank` apply to hybrid as well as regional search.
 - The README tells the benchmark story with charts. `benchmarks/benchmark.md` holds the current results and `benchmarks/benchmark_history.md` every earlier run.

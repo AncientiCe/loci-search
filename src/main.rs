@@ -391,6 +391,7 @@ impl From<Settings> for SearchConfig {
             max_postings: settings.max_postings,
             rescue: settings.rescue,
             rescue_max_scored: None,
+            rescue_max_terms: None,
             regional_rescore: None,
             routing_entries: None,
             graph_candidates: None,

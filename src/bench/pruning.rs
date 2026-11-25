@@ -398,6 +398,19 @@ fn ablations(frozen: &SearchConfig, corpus: usize) -> Vec<(String, Strategy, Sea
             }),
         ));
     }
+    // The keyword rescue on only the rarest query terms, at the frozen HotpotQA setting.
+    for cap in [8, 12, 16] {
+        plans.push((
+            format!("hybrid_graph_150_width_128_rescue_60_terms_{cap}"),
+            Strategy::Hybrid,
+            with(&|config| {
+                config.graph_candidates = Some(150);
+                config.graph_width = 128;
+                config.rescue = 60;
+                config.rescue_max_terms = Some(cap);
+            }),
+        ));
+    }
     plans
 }
 

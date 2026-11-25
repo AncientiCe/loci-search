@@ -44,6 +44,10 @@ pub struct SearchConfig {
     pub rescue: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rescue_max_scored: Option<usize>,
+    /// Run the global keyword rescue on at most this many query terms, the ones in the
+    /// fewest passages. Reranker coverage still uses every term. Unset uses all terms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rescue_max_terms: Option<usize>,
     /// Scan regions with int8 vectors and re-score this many best candidates exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regional_rescore: Option<usize>,
@@ -114,6 +118,7 @@ impl Default for SearchConfig {
             max_postings: 60_000,
             rescue: 40,
             rescue_max_scored: None,
+            rescue_max_terms: None,
             regional_rescore: None,
             routing_entries: None,
             graph_candidates: None,
@@ -174,6 +179,10 @@ impl SearchConfig {
             self.regional_rescore
                 .is_none_or(|rescore| rescore >= self.depth),
             "regional re-scoring must keep at least the candidate depth"
+        );
+        ensure!(
+            self.rescue_max_terms.is_none_or(|cap| cap > 0),
+            "rescue_max_terms must be positive"
         );
         ensure!(
             self.routing_entries.is_none_or(|entries| entries > 0),
@@ -382,9 +391,26 @@ fn search_with(
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
         Strategy::Regional | Strategy::Hybrid => {
-            let rescue = engine.regional_index().rescue_filtered(
+            let index = engine.regional_index();
+            // Keep only the rarest terms for the keyword rescue when the query is long.
+            let rescue_terms = match config.rescue_max_terms {
+                Some(cap) if query_terms.len() > cap => {
+                    let mut ranked = query_terms
+                        .iter()
+                        .map(|term| (index.document_frequency(term), term))
+                        .collect::<Vec<_>>();
+                    ranked.sort_unstable();
+                    ranked
+                        .into_iter()
+                        .take(cap)
+                        .map(|(_, term)| term.clone())
+                        .collect::<BTreeSet<_>>()
+                }
+                _ => query_terms.clone(),
+            };
+            let rescue = index.rescue_filtered(
                 engine,
-                &query_terms,
+                &rescue_terms,
                 config.rescue,
                 config.rescue_max_scored,
                 allow,

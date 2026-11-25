@@ -440,17 +440,20 @@ fn search_with(
             .map(|id| engine.ids[*id].clone())
             .collect();
         let timer = Timer::start(&profile, "rerank");
+        let explain = HitExplanation {
+            strategy,
+            signals: &signals,
+            graph_ranks: &graph_ranks,
+            routes: &routes,
+            expanded: &expanded,
+        };
         let hits = palace_hits(
             engine,
             query,
             vector,
-            strategy,
             config,
             &scored_ids,
-            &signals,
-            &graph_ranks,
-            &routes,
-            &expanded,
+            &explain,
             &mut work,
         )?;
         timer.finish(&mut profile);
@@ -537,17 +540,22 @@ fn search_with(
     })
 }
 
+/// What a Palace-ranked hit reports about how retrieval reached it.
+struct HitExplanation<'a> {
+    strategy: Strategy,
+    signals: &'a HashMap<usize, Candidate>,
+    graph_ranks: &'a HashMap<usize, usize>,
+    routes: &'a regional::Routes,
+    expanded: &'a [Route],
+}
+
 fn palace_hits(
     engine: &crate::index::Engine,
     query: &Query,
     vector: &[f32],
-    strategy: Strategy,
     config: &SearchConfig,
     scored_ids: &[usize],
-    signals: &HashMap<usize, Candidate>,
-    graph_ranks: &HashMap<usize, usize>,
-    routes: &regional::Routes,
-    expanded: &[Route],
+    explain: &HitExplanation<'_>,
     work: &mut Work,
 ) -> Result<Vec<Hit>> {
     let stats = engine
@@ -595,8 +603,8 @@ fn palace_hits(
         let source = sources[row.index]
             .take()
             .context("palace hit taken twice")?;
-        let signal = signals.get(&id).copied().unwrap_or_default();
-        let global_lexical_rank = if strategy == Strategy::Regional {
+        let signal = explain.signals.get(&id).copied().unwrap_or_default();
+        let global_lexical_rank = if explain.strategy == Strategy::Regional {
             signal.rescue
         } else {
             signal.lexical
@@ -607,8 +615,8 @@ fn palace_hits(
             lexical_rank: signal.lexical,
             vector_rank: signal.vector,
             global_lexical_rank,
-            graph_rank: graph_ranks.get(&id).copied(),
-            routes: routes.for_hit(engine, id, expanded),
+            graph_rank: explain.graph_ranks.get(&id).copied(),
+            routes: explain.routes.for_hit(engine, id, explain.expanded),
         });
     }
     Ok(hits)

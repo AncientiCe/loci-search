@@ -219,10 +219,8 @@ fn sources(result: &SearchResult) -> Vec<String> {
     result
         .hits
         .iter()
-        .filter_map(|hit| {
-            seen.insert(hit.source.document.clone())
-                .then(|| hit.source.document.clone())
-        })
+        .filter(|hit| seen.insert(hit.source.document.clone()))
+        .map(|hit| hit.source.document.clone())
         .collect()
 }
 

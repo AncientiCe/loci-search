@@ -137,14 +137,12 @@ fn archived_exchange_dump_matches_the_palace_gate() {
             .iter()
             .map(|(source, score)| ((*source).to_string(), *score))
             .collect();
-        if !sessions_match(&actual, expected) {
-            if mismatches.len() < 8 {
-                mismatches.push(format!(
-                    "{} expected {expected:?} got {:?}",
-                    case.question_id,
-                    actual.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>()
-                ));
-            }
+        if !sessions_match(&actual, expected) && mismatches.len() < 8 {
+            mismatches.push(format!(
+                "{} expected {expected:?} got {:?}",
+                case.question_id,
+                actual.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>()
+            ));
         }
         if !case.answer_session_ids.is_empty() {
             questions_scored += 1;

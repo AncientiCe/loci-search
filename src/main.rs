@@ -629,7 +629,7 @@ fn main() -> Result<()> {
                         engine.manifest.embedding.model_revision,
                         model.id()
                     );
-                    Some(QueryEncoder::Pack(model.open(&cache)?))
+                    Some(QueryEncoder::Pack(Box::new(model.open(&cache)?)))
                 }
                 Some(BenchEmbed::MiniLm) => {
                     ensure!(
@@ -742,7 +742,7 @@ fn parse_bench_embed(value: &str) -> Result<BenchEmbed, String> {
 }
 
 enum QueryEncoder {
-    Pack(loci_search::embedding::LocalEncoder),
+    Pack(Box<loci_search::embedding::LocalEncoder>),
     MiniLm(loci_search::palace::MiniLm),
 }
 

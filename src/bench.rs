@@ -207,7 +207,7 @@ impl FrozenComparison {
         let plan = self
             .settings
             .iter_mut()
-            .find(|plan| plan.strategy == Strategy::Regional)
+            .find(|plan| plan.strategy.uses_rescue())
             .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
         plan.config.rescue_max_scored = Some(cap);
         plan.config.validate()?;
@@ -218,7 +218,7 @@ impl FrozenComparison {
         let plan = self
             .settings
             .iter_mut()
-            .find(|plan| plan.strategy == Strategy::Regional)
+            .find(|plan| plan.strategy.uses_rescue())
             .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
         plan.config.regional_rescore = Some(rescore);
         plan.config.validate()?;
@@ -229,7 +229,7 @@ impl FrozenComparison {
         let plan = self
             .settings
             .iter_mut()
-            .find(|plan| plan.strategy == Strategy::Regional)
+            .find(|plan| plan.strategy.uses_rescue())
             .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
         plan.config.routing_entries = Some(entries);
         plan.config.validate()?;
@@ -240,7 +240,7 @@ impl FrozenComparison {
         let plan = self
             .settings
             .iter_mut()
-            .find(|plan| plan.strategy == Strategy::Regional)
+            .find(|plan| plan.strategy.uses_rescue())
             .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
         plan.config.graph_candidates = Some(count);
         plan.config.validate()?;
@@ -261,7 +261,8 @@ impl FrozenComparison {
                     Strategy::Regional,
                     Strategy::Elasticsearch
                 ]
-                || strategies == [Strategy::Regional, Strategy::Elasticsearch],
+                || strategies == [Strategy::Regional, Strategy::Elasticsearch]
+                || strategies == [Strategy::Hybrid, Strategy::Elasticsearch],
             "comparison report must contain a supported comparison of strategies"
         );
         for plan in &self.settings {
@@ -280,11 +281,20 @@ impl FrozenComparison {
         let plan = self
             .settings
             .iter_mut()
-            .find(|plan| plan.strategy == Strategy::Regional)
+            .find(|plan| plan.strategy.uses_rescue())
             .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))?;
         plan.config.regional_rerank = Some(weights);
         plan.config.validate()?;
         Ok(self)
+    }
+
+    /// Strategy of the frozen Loci plan: regional or hybrid.
+    pub fn loci_strategy(&self) -> Result<Strategy> {
+        self.settings
+            .iter()
+            .map(|plan| plan.strategy)
+            .find(|strategy| strategy.uses_rescue())
+            .ok_or_else(|| anyhow::anyhow!("frozen report has no regional or hybrid plan"))
     }
 
     pub fn regional_config(&self, engine: &Engine) -> Result<&SearchConfig> {
@@ -294,7 +304,7 @@ impl FrozenComparison {
         );
         self.settings
             .iter()
-            .find(|plan| plan.strategy == Strategy::Regional)
+            .find(|plan| plan.strategy.uses_rescue())
             .map(|plan| &plan.config)
             .ok_or_else(|| anyhow::anyhow!("frozen report has no regional configuration"))
     }
@@ -316,7 +326,7 @@ impl Plan {
         remote: Option<&crate::remote::Client>,
         query: &Query,
     ) -> Result<SearchResult> {
-        if self.strategy == Strategy::Regional
+        if self.strategy.uses_rescue()
             && let Some(remote) = remote
         {
             return remote.search(engine, query);
@@ -593,7 +603,15 @@ fn evaluate_with(
         0.0
     };
     let started = Instant::now();
-    engine.prepare_regional()?;
+    // A comparison with only a hybrid Loci plan needs just the lean rescue index.
+    if settings
+        .iter()
+        .any(|plan| plan.strategy == Strategy::Regional)
+    {
+        engine.prepare_regional()?;
+    } else {
+        engine.prepare_lexical()?;
+    }
     let regional_prepare_ms = milliseconds(started);
     let regional_posting_payload_bytes = engine.regional_index().payload_bytes();
     let tuning = if let Some(Comparison::Tune {
@@ -741,7 +759,7 @@ fn evaluate_with(
             let index = settings.iter().position(|plan| plan.strategy == strategy)?;
             Some(&samples.get(&(index, None))?[..queries.len()])
         };
-        let regional = first_round(Strategy::Regional)?;
+        let regional = first_round(Strategy::Regional).or_else(|| first_round(Strategy::Hybrid))?;
         let elastic = first_round(Strategy::Elasticsearch)?;
         Some(PairedEffects {
             ndcg_at_10: paired(regional, elastic, |quality| quality.ndcg_at_10)?,
@@ -750,8 +768,8 @@ fn evaluate_with(
     });
     let regional_index = settings
         .iter()
-        .position(|plan| plan.strategy == Strategy::Regional)
-        .expect("regional plan");
+        .position(|plan| plan.strategy.uses_rescue())
+        .expect("regional or hybrid plan");
     let regional_samples = &samples[&(regional_index, None)];
     let scoring = |counts| ScoredPassages::summarize(counts, engine.manifest.chunks);
     let regional_scoring = scoring(
@@ -905,7 +923,7 @@ fn measure_throughput(
     let mut rows = Vec::new();
     let plans = plans
         .iter()
-        .filter(|plan| matches!(plan.strategy, Strategy::Regional | Strategy::Elasticsearch))
+        .filter(|plan| plan.strategy.uses_rescue() || plan.strategy == Strategy::Elasticsearch)
         .collect::<Vec<_>>();
     for plan in &plans {
         if plan.elastic.is_none() {
@@ -953,7 +971,7 @@ fn measure_throughput(
                                         .expect("configured Elasticsearch")
                                         .search(engine, query, &plan.config, options)?,
                                     None => match run.remote.as_ref() {
-                                        Some(remote) if plan.strategy == Strategy::Regional => {
+                                        Some(remote) if plan.strategy.uses_rescue() => {
                                             remote.search(engine, query)?
                                         }
                                         _ => engine.search_prepared(

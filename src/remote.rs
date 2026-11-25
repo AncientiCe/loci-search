@@ -23,14 +23,24 @@ struct Request {
 
 #[derive(Serialize, Deserialize)]
 struct Response {
+    strategy: Strategy,
     hits: Vec<(String, f64)>,
     candidates: Vec<String>,
 }
 
-/// Serve regional search with `config` on `bind` until the process stops.
-pub fn serve(mut engine: Engine, config: SearchConfig, bind: &str) -> Result<()> {
-    engine.prepare(Strategy::Regional, &config)?;
-    let state = Arc::new((engine, config));
+/// Serve `strategy` (regional or hybrid) with `config` on `bind` until the process stops.
+pub fn serve(
+    mut engine: Engine,
+    strategy: Strategy,
+    config: SearchConfig,
+    bind: &str,
+) -> Result<()> {
+    ensure!(
+        strategy.uses_rescue(),
+        "bench-serve runs regional or hybrid search"
+    );
+    engine.prepare(strategy, &config)?;
+    let state = Arc::new((engine, strategy, config));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -40,11 +50,11 @@ pub fn serve(mut engine: Engine, config: SearchConfig, bind: &str) -> Result<()>
                 "/search",
                 axum::routing::post(
                     |axum::extract::State(state): axum::extract::State<
-                        Arc<(Engine, SearchConfig)>,
+                        Arc<(Engine, Strategy, SearchConfig)>,
                     >,
                      axum::Json(request): axum::Json<Request>| async move {
                         let answer = tokio::task::spawn_blocking(move || -> Result<Response> {
-                            let (engine, config) = &*state;
+                            let (engine, strategy, config) = &*state;
                             let query = Query {
                                 id: "http".into(),
                                 text: request.text,
@@ -54,9 +64,9 @@ pub fn serve(mut engine: Engine, config: SearchConfig, bind: &str) -> Result<()>
                                 judgments: Default::default(),
                                 required: Vec::new(),
                             };
-                            let result =
-                                engine.search_prepared(&query, Strategy::Regional, config)?;
+                            let result = engine.search_prepared(&query, *strategy, config)?;
                             Ok(Response {
+                                strategy: *strategy,
                                 hits: result
                                     .hits
                                     .into_iter()
@@ -81,7 +91,7 @@ pub fn serve(mut engine: Engine, config: SearchConfig, bind: &str) -> Result<()>
             )
             .with_state(state);
         let listener = tokio::net::TcpListener::bind(bind).await?;
-        eprintln!("Serving regional search on {bind}");
+        eprintln!("Serving {strategy:?} search on {bind}");
         axum::serve(listener, app).await?;
         Ok(())
     })
@@ -145,7 +155,7 @@ impl Client {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(SearchResult {
-            strategy: Strategy::Regional,
+            strategy: response.strategy,
             hits,
             candidates: response.candidates,
             lexical_rescue_only_candidates: Vec::new(),
@@ -173,7 +183,14 @@ mod tests {
             .port();
         let served = Engine::open(&db)?;
         let server_config = config.clone();
-        std::thread::spawn(move || serve(served, server_config, &format!("127.0.0.1:{port}")));
+        std::thread::spawn(move || {
+            serve(
+                served,
+                Strategy::Regional,
+                server_config,
+                &format!("127.0.0.1:{port}"),
+            )
+        });
         let client = Client::new(&format!("http://127.0.0.1:{port}/"))?;
         let mut engine = Engine::open(&db)?;
         engine.prepare(Strategy::Regional, &config)?;

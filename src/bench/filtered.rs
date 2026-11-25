@@ -215,7 +215,7 @@ pub fn filter_dev(
             .collect::<Vec<_>>();
         let run_loci = |config: &SearchConfig, query: &Query| -> Result<Sample> {
             let started = Instant::now();
-            let result = engine.search_filtered(query, config, &allow)?;
+            let result = engine.search_filtered(query, Strategy::Regional, config, &allow)?;
             let elapsed_ms = milliseconds(started);
             sample(&rows, &result, elapsed_ms, |work| {
                 (

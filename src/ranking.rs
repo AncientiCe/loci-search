@@ -20,8 +20,17 @@ pub enum Strategy {
     Exact,
     Global,
     Regional,
+    /// Global rescue, the persisted HNSW graph, and the reranker, without the regional scan.
+    Hybrid,
     #[value(skip)]
     Elasticsearch,
+}
+
+impl Strategy {
+    /// Regional and hybrid search take their lexical list from the in-memory global rescue.
+    pub fn uses_rescue(self) -> bool {
+        matches!(self, Self::Regional | Self::Hybrid)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -230,11 +239,12 @@ pub(crate) fn search(
     search_with(engine, query, vector, strategy, config, None, None, None)
 }
 
-/// Regional search restricted to the passages `allow` admits.
+/// Regional or hybrid search restricted to the passages `allow` admits.
 pub(crate) fn search_filtered(
     engine: &Engine,
     query: &Query,
     vector: &[f32],
+    strategy: Strategy,
     config: &SearchConfig,
     allow: &[bool],
 ) -> Result<SearchResult> {
@@ -246,7 +256,7 @@ pub(crate) fn search_filtered(
         engine,
         query,
         vector,
-        Strategy::Regional,
+        strategy,
         config,
         None,
         Some(allow),
@@ -304,8 +314,8 @@ fn search_with(
     mut profile: Option<&mut Phases>,
 ) -> Result<SearchResult> {
     ensure!(
-        allow.is_none() || strategy == Strategy::Regional,
-        "only regional search accepts a passage filter"
+        allow.is_none() || strategy.uses_rescue(),
+        "only regional and hybrid search accept a passage filter"
     );
     let query_terms = terms(&query.text).collect::<BTreeSet<_>>();
     let mut work = Work::default();
@@ -317,7 +327,7 @@ fn search_with(
     let timer = Timer::start(&profile, "rescue");
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
-        Strategy::Regional => {
+        Strategy::Regional | Strategy::Hybrid => {
             let rescue = engine.regional_index().rescue_filtered(
                 engine,
                 &query_terms,
@@ -341,7 +351,7 @@ fn search_with(
     work.global_lexical_returned = global_lexical.len();
     let hybrid = matches!(
         strategy,
-        Strategy::Regional | Strategy::Global | Strategy::Elasticsearch
+        Strategy::Regional | Strategy::Hybrid | Strategy::Global | Strategy::Elasticsearch
     );
     let weights = if hybrid {
         coverage_weights(engine, &query_terms)?
@@ -351,7 +361,7 @@ fn search_with(
     let mut candidates = BTreeMap::<usize, Candidate>::new();
     for (rank, &id) in global_lexical.iter().enumerate() {
         let candidate = candidates.entry(id).or_default();
-        if strategy == Strategy::Regional {
+        if strategy.uses_rescue() {
             candidate.rescue = Some(rank + 1);
         } else {
             candidate.lexical = Some(rank + 1);
@@ -379,6 +389,26 @@ fn search_with(
                     similarity: 0.0,
                 })
                 .collect()
+        }
+        Strategy::Hybrid => {
+            let count = config
+                .graph_candidates
+                .ok_or_else(|| anyhow::anyhow!("hybrid search needs graph_candidates"))?;
+            let timer = Timer::start(&profile, "graph");
+            let (graph, comparisons) = engine.nearest_dense(vector, count, config.graph_width);
+            work.graph_vector_comparisons = Some(comparisons);
+            // A filtered search keeps only admitted graph neighbours (post-filtering).
+            let mut nearest = graph
+                .into_iter()
+                .filter(|hit| allow.is_none_or(|allow| allow[hit.id]))
+                .collect::<Vec<_>>();
+            for (rank, hit) in nearest.iter().enumerate() {
+                graph_ranks.insert(hit.id, rank + 1);
+            }
+            nearest.sort_unstable_by(|a, b| b.cmp(a));
+            nearest.truncate(config.depth);
+            timer.finish(&mut profile);
+            nearest
         }
         Strategy::Regional => {
             let selection = regional::select(
@@ -429,7 +459,7 @@ fn search_with(
     });
     let overflow = fused.split_off(fused.len().min(config.depth));
     // Reserve reranker slots for rescue hits even when both local lists agree.
-    if strategy == Strategy::Regional {
+    if strategy.uses_rescue() {
         let rescue = global_lexical.iter().copied().collect::<BTreeSet<_>>();
         for candidate in overflow.into_iter().filter(|(id, _)| rescue.contains(id)) {
             let replace = fused
@@ -454,7 +484,7 @@ fn search_with(
     if engine.manifest.retrieval_profile == Some(crate::index::RetrievalProfile::Palace)
         && matches!(
             strategy,
-            Strategy::Exact | Strategy::Global | Strategy::Regional
+            Strategy::Exact | Strategy::Global | Strategy::Regional | Strategy::Hybrid
         )
     {
         let scored_ids: Vec<usize> = if strategy == Strategy::Exact {
@@ -498,7 +528,7 @@ fn search_with(
     }
     let total_weight = weights.values().sum::<f64>().max(f64::EPSILON);
     let rerank = match strategy {
-        Strategy::Regional => config.regional_rerank.unwrap_or_default(),
+        Strategy::Regional | Strategy::Hybrid => config.regional_rerank.unwrap_or_default(),
         Strategy::Elasticsearch => config.elastic_rerank.unwrap_or_default(),
         _ => RegionalRerank::default(),
     };
@@ -509,7 +539,7 @@ fn search_with(
             // Every strategy reads coverage from the in-memory postings when they are
             // loaded, so an external engine's candidates are not charged for re-reading
             // and tokenizing passage text. Both paths match the same terms.
-            let postings = if strategy == Strategy::Regional {
+            let postings = if strategy.uses_rescue() {
                 Some(engine.regional_index())
             } else {
                 engine.loaded_regional_index()
@@ -547,7 +577,7 @@ fn search_with(
         .sort_unstable_by(|(a_id, _, a, _), (b_id, _, b, _)| b.total_cmp(a).then(a_id.cmp(b_id)));
     let mut hits = Vec::new();
     for (id, candidate, score, source) in reranked.into_iter().take(config.limit) {
-        let global_lexical_rank = if strategy == Strategy::Regional {
+        let global_lexical_rank = if strategy.uses_rescue() {
             candidate.rescue
         } else {
             candidate.lexical
@@ -661,7 +691,7 @@ fn palace_hits(
             .take()
             .context("palace hit taken twice")?;
         let signal = explain.signals.get(&id).copied().unwrap_or_default();
-        let global_lexical_rank = if explain.strategy == Strategy::Regional {
+        let global_lexical_rank = if explain.strategy.uses_rescue() {
             signal.rescue
         } else {
             signal.lexical

@@ -35,6 +35,60 @@ fn lexical_rescue_finds_the_misplaced_identifier_within_routing_budgets() -> any
 }
 
 #[test]
+fn hybrid_search_finds_the_misplaced_identifier_without_a_regional_scan() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("hybrid.sqlite");
+    let (embedding, passages, queries) = fixture::generate(512)?;
+    ingest(&db, passages, embedding, 16)?;
+    let mut engine = Engine::open(&db)?;
+    let config = SearchConfig {
+        limit: 10,
+        depth: 30,
+        rescue: 1,
+        graph_candidates: Some(20),
+        ..SearchConfig::default()
+    };
+    let query = &queries[0];
+    let result = engine.search(query, Strategy::Hybrid, &config)?;
+    let expected = query.judgments.keys().next().unwrap();
+    assert_eq!(&result.hits[0].source.id, expected);
+    assert_eq!(result.hits[0].global_lexical_rank, Some(1));
+    assert_eq!(result.work.regions_expanded, 0);
+    assert_eq!(result.work.regional_chunks_scored, 0);
+    assert!(
+        result
+            .work
+            .graph_vector_comparisons
+            .is_some_and(|count| count > 0)
+    );
+    assert!(result.hits.iter().any(|hit| hit.graph_rank.is_some()));
+    // Hybrid search loads only the lean rescue index; a regional search then
+    // upgrades it and still runs, and hybrid keeps working on the full index.
+    let regional = engine.search(query, Strategy::Regional, &config)?;
+    assert!(regional.work.regions_expanded > 0);
+    let again = engine.search(query, Strategy::Hybrid, &config)?;
+    let ids = |result: &SearchResult| {
+        result
+            .hits
+            .iter()
+            .map(|hit| (hit.source.id.clone(), hit.score.to_bits()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&again), ids(&result));
+    // Hybrid needs the graph.
+    let without_graph = SearchConfig {
+        graph_candidates: None,
+        ..config
+    };
+    assert!(
+        engine
+            .search(query, Strategy::Hybrid, &without_graph)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn repeat_ingest_keeps_one_chunk_and_open_readers_keep_their_snapshot() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
     let db = directory.path().join("test.sqlite");

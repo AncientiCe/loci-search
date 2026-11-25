@@ -520,7 +520,8 @@ fn main() -> Result<()> {
             let engine = Engine::open(&db)?;
             let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
             let config = frozen.regional_config(&engine)?.clone();
-            loci_search::remote::serve(engine, config, &bind)?;
+            let strategy = frozen.loci_strategy()?;
+            loci_search::remote::serve(engine, strategy, config, &bind)?;
         }
         Command::PruningDev {
             db,

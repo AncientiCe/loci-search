@@ -578,8 +578,16 @@ impl Engine {
     }
 
     pub(crate) fn prepare_regional(&mut self) -> Result<()> {
-        if self.regional.is_none() {
+        if self.regional.as_ref().is_none_or(RegionalIndex::is_lean) {
             self.regional = Some(RegionalIndex::load(self)?);
+        }
+        Ok(())
+    }
+
+    /// Load the lean rescue index for hybrid search, keeping a full one already loaded.
+    pub(crate) fn prepare_lexical(&mut self) -> Result<()> {
+        if self.regional.is_none() {
+            self.regional = Some(RegionalIndex::load_lean(self)?);
         }
         Ok(())
     }
@@ -615,6 +623,14 @@ impl Engine {
                 self.prepare_dense_graph()?;
             }
         }
+        if strategy == Strategy::Hybrid {
+            ensure!(
+                config.graph_candidates.is_some(),
+                "hybrid search needs graph_candidates"
+            );
+            self.prepare_lexical()?;
+            self.prepare_dense_graph()?;
+        }
         Ok(())
     }
 
@@ -629,9 +645,10 @@ impl Engine {
         let ready = match strategy {
             Strategy::Global => self.graph.is_some(),
             Strategy::Regional => {
-                self.regional.is_some()
+                self.regional.as_ref().is_some_and(|index| !index.is_lean())
                     && (config.graph_candidates.is_none() || self.dense_graph.is_some())
             }
+            Strategy::Hybrid => self.regional.is_some() && self.dense_graph.is_some(),
             _ => true,
         };
         ensure!(
@@ -642,21 +659,29 @@ impl Engine {
         ranking::search(self, query, &vector, strategy, config)
     }
 
-    /// Regional search over the passages `allow` admits, after [`Engine::prepare`].
+    /// Regional or hybrid search over the passages `allow` admits, after [`Engine::prepare`].
     pub(crate) fn search_filtered(
         &self,
         query: &Query,
+        strategy: Strategy,
         config: &SearchConfig,
         allow: &[bool],
     ) -> Result<SearchResult> {
         config.validate()?;
+        let ready = match strategy {
+            Strategy::Regional => {
+                self.regional.as_ref().is_some_and(|index| !index.is_lean())
+                    && (config.graph_candidates.is_none() || self.dense_graph.is_some())
+            }
+            Strategy::Hybrid => self.regional.is_some() && self.dense_graph.is_some(),
+            _ => false,
+        };
         ensure!(
-            self.regional.is_some()
-                && (config.graph_candidates.is_none() || self.dense_graph.is_some()),
-            "prepare the engine for regional search before a filtered search"
+            ready,
+            "prepare the engine for {strategy:?} before a filtered search"
         );
         let vector = self.query_vector(query)?;
-        ranking::search_filtered(self, query, &vector, config, allow)
+        ranking::search_filtered(self, query, &vector, strategy, config, allow)
     }
 
     pub(crate) fn profile_regional(

@@ -46,6 +46,8 @@ pub(crate) struct RegionalIndex {
     quantized: Quantized,
     /// One buffer set per in-flight search. Queries do not share or wait on one scratch.
     scratch: Mutex<Vec<Scratch>>,
+    /// Built without per-region postings, int8 vectors, or scratch: rescue and coverage only.
+    lean: bool,
 }
 
 struct Scratch {
@@ -92,8 +94,22 @@ impl RescueScores {
 
 impl RegionalIndex {
     pub fn load(engine: &Engine) -> Result<Self> {
-        let mut addresses = vec![Vec::new(); engine.ids.len()];
-        for (region, members) in engine.topology.members.iter().enumerate() {
+        Self::load_with(engine, false)
+    }
+
+    /// Rescue postings, norms, and coverage only, for hybrid search: no per-region
+    /// posting lists, int8 vectors, or scan scratch.
+    pub fn load_lean(engine: &Engine) -> Result<Self> {
+        Self::load_with(engine, true)
+    }
+
+    pub fn is_lean(&self) -> bool {
+        self.lean
+    }
+
+    fn load_with(engine: &Engine, lean: bool) -> Result<Self> {
+        let mut addresses = vec![Vec::new(); if lean { 0 } else { engine.ids.len() }];
+        for (region, members) in engine.topology.members.iter().enumerate().filter(|_| !lean) {
             for &doc in members {
                 addresses[doc].push(region);
             }
@@ -126,7 +142,7 @@ impl RegionalIndex {
                     id: u32::try_from(id)?,
                     frequency,
                 });
-                for &region in &addresses[id] {
+                for &region in addresses.get(id).map_or(&[][..], Vec::as_slice) {
                     posting.by_region.entry(region).or_default().push(offset);
                 }
             }
@@ -141,12 +157,17 @@ impl RegionalIndex {
             fts5_compatible,
             rescue_norms,
             regional_norms,
-            quantized: Quantized::build(&engine.vectors),
-            scratch: Mutex::new(vec![Scratch {
-                first_visit: vec![UNVISITED; engine.ids.len()],
-                lexical: vec![0.0; engine.ids.len()],
-                seen_terms: vec![0; engine.ids.len()],
-            }]),
+            quantized: Quantized::build(if lean { &[] } else { &engine.vectors }),
+            scratch: Mutex::new(if lean {
+                Vec::new()
+            } else {
+                vec![Scratch {
+                    first_visit: vec![UNVISITED; engine.ids.len()],
+                    lexical: vec![0.0; engine.ids.len()],
+                    seen_terms: vec![0; engine.ids.len()],
+                }]
+            }),
+            lean,
         })
     }
 
@@ -353,6 +374,7 @@ pub(crate) fn select(
     profile: &mut Option<&mut Phases>,
 ) -> Selection {
     let index = engine.regional_index();
+    assert!(!index.lean, "regional search needs the full regional index");
     let terms = weights
         .iter()
         .map(|(term, &idf)| (index.postings.get(term), idf))
@@ -659,6 +681,11 @@ mod tests {
             ..SearchConfig::default()
         };
         engine.prepare(Strategy::Regional, &config)?;
+        let hybrid = SearchConfig {
+            graph_candidates: Some(40),
+            ..config.clone()
+        };
+        engine.prepare(Strategy::Hybrid, &hybrid)?;
         let allow = (0..engine.ids.len())
             .map(|id| id % 7 == 0)
             .collect::<Vec<_>>();
@@ -666,8 +693,21 @@ mod tests {
             .filter(|&id| allow[id])
             .collect::<Vec<_>>();
         for query in queries.iter().take(8) {
-            let result = engine.search_filtered(query, &config, &allow)?;
-            assert!(!result.hits.is_empty());
+            for result in [
+                engine.search_filtered(query, Strategy::Hybrid, &hybrid, &allow)?,
+                engine.search_filtered(query, Strategy::Regional, &config, &allow)?,
+            ] {
+                assert!(!result.hits.is_empty());
+                for hit in &result.hits {
+                    let row = engine
+                        .ids
+                        .iter()
+                        .position(|id| *id == hit.source.id)
+                        .unwrap();
+                    assert!(allow[row], "hit {} is outside the filter", hit.source.id);
+                }
+            }
+            let result = engine.search_filtered(query, Strategy::Regional, &config, &allow)?;
             for hit in &result.hits {
                 let row = engine
                     .ids

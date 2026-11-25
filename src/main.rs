@@ -223,7 +223,7 @@ enum Command {
         exact_queries: usize,
         /// Encode each query from its text and add that time to every sample.
         ///
-        /// `bge-small-en-v1.5` and `multilingual-e5-small` use an installed FastEmbed pack.
+        /// `bge-small-en-v1.5` and `multilingual-e5-small` use an installed model pack.
         /// `minilm-l6-v2-q8` uses the rc.11 sidecar, one text per call.
         #[arg(long, value_parser = parse_bench_embed)]
         embed_model: Option<BenchEmbed>,

@@ -162,6 +162,8 @@ impl ModelPack {
         };
         let mut hash = Sha256::new();
         for field in [
+            // Names the codec, not a dependency: the encoder reproduces fastembed 7.8.0
+            // exactly, and changing this string would orphan every existing index.
             "fastembed-7.8.0",
             "onnx-fp32",
             "512",
@@ -273,10 +275,6 @@ impl ModelPack {
     /// `thread_cap` limits ONNX intra-op threads. The service keeps this at 4.
     #[cfg(feature = "local-model")]
     pub fn open_threads(self, cache: &Path, thread_cap: usize) -> Result<LocalEncoder> {
-        use fastembed::{
-            InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
-            UserDefinedEmbeddingModel,
-        };
         let directory = self.directory(cache);
         // Verify the actual bytes supplied to inference even if another process has
         // changed the cache since installation or the last verification.
@@ -298,27 +296,33 @@ impl ModelPack {
             asset.copy_verified(file, &mut bytes)?;
             Ok(bytes)
         };
-        let tokenizer = TokenizerFiles {
-            tokenizer_file: read("tokenizer.json")?,
-            config_file: read("config.json")?,
-            special_tokens_map_file: read("special_tokens_map.json")?,
-            tokenizer_config_file: read("tokenizer_config.json")?,
+        let json = |name: &str| -> Result<serde_json::Value> {
+            serde_json::from_slice(&read(name)?).with_context(|| format!("parsing {name}"))
         };
-        let pooling = match self {
-            Self::BgeSmallEn => Pooling::Cls,
-            Self::MultilingualE5Small => Pooling::Mean,
-        };
-        let model = UserDefinedEmbeddingModel::new(read("onnx/model.onnx")?, tokenizer)
-            .with_pooling(pooling);
+        let tokenizer = TextTokenizer::load(
+            &read("tokenizer.json")?,
+            &json("config.json")?,
+            &json("tokenizer_config.json")?,
+        )?;
         let threads =
             std::thread::available_parallelism().map_or(1, |n| n.get().min(thread_cap.max(1)));
-        let options = InitOptionsUserDefined::default()
-            .with_max_length(512)
-            .with_intra_threads(threads);
-        let runtime = TextEmbedding::try_new_from_user_defined(model, options)?;
+        let session = ort::session::Session::builder(&onnx_environment()?)
+            .map_err(|error| anyhow::anyhow!("ONNX Runtime session: {error}"))?
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+            .map_err(|error| anyhow::anyhow!("ONNX Runtime optimization level: {error}"))?
+            .with_intra_threads(threads)
+            .map_err(|error| anyhow::anyhow!("ONNX Runtime threads: {error}"))?
+            .commit_from_memory(&read("onnx/model.onnx")?)
+            .map_err(|error| anyhow::anyhow!("loading the ONNX model: {error}"))?;
+        let token_types = session
+            .inputs()
+            .iter()
+            .any(|input| input.name() == "token_type_ids");
         Ok(LocalEncoder {
             pack: self,
-            runtime,
+            tokenizer,
+            session,
+            token_types,
         })
     }
 
@@ -340,34 +344,305 @@ fn verify_file(asset: &Asset, path: &Path) -> Result<()> {
     )
 }
 
+/// A pack's `tokenizer.json` with the post-processing, truncation, and padding the
+/// manifest records: special tokens around each text, at most 512 tokens (or the
+/// tokenizer's own limit) with room kept for those special tokens, truncated on the right.
+#[cfg(feature = "local-model")]
+struct TextTokenizer {
+    model: kitoken::Kitoken,
+    prefix: Vec<u32>,
+    suffix: Vec<u32>,
+    max_length: usize,
+    pad_id: u32,
+}
+
+#[cfg(feature = "local-model")]
+impl TextTokenizer {
+    fn load(
+        tokenizer: &[u8],
+        config: &serde_json::Value,
+        tokenizer_config: &serde_json::Value,
+    ) -> Result<Self> {
+        let definition: serde_json::Value =
+            serde_json::from_slice(tokenizer).context("parsing tokenizer.json")?;
+        let model = kitoken::Kitoken::from_tokenizers_slice(tokenizer)
+            .map_err(|error| anyhow::anyhow!("loading tokenizer.json: {error}"))?;
+        let (prefix, suffix) = special_tokens(&definition["post_processor"])?;
+        let model_max_length = tokenizer_config["model_max_length"]
+            .as_f64()
+            .context("tokenizer_config.json has no numeric model_max_length")?;
+        let max_length = MAX_TOKENS.min(model_max_length as usize);
+        ensure!(
+            max_length > prefix.len() + suffix.len(),
+            "the token limit leaves no room for text"
+        );
+        let pad_token = tokenizer_config["pad_token"]
+            .as_str()
+            .or_else(|| tokenizer_config["pad_token"]["content"].as_str())
+            .context("tokenizer_config.json has no pad_token")?;
+        let pad_id = config["pad_token_id"]
+            .as_u64()
+            .map(u32::try_from)
+            .transpose()?
+            .or_else(|| token_id(&definition, pad_token))
+            .unwrap_or(0);
+        Ok(Self {
+            model,
+            prefix,
+            suffix,
+            max_length,
+            pad_id,
+        })
+    }
+
+    fn encode(&self, text: &str) -> Result<Vec<u32>> {
+        // Special tokens written in the text map to their own ids, as in `tokenizers`.
+        let mut content = self
+            .model
+            .encode(text, true)
+            .map_err(|error| anyhow::anyhow!("tokenizing: {error}"))?;
+        content.truncate(self.max_length - self.prefix.len() - self.suffix.len());
+        let mut ids = Vec::with_capacity(self.prefix.len() + content.len() + self.suffix.len());
+        ids.extend_from_slice(&self.prefix);
+        ids.extend(content);
+        ids.extend_from_slice(&self.suffix);
+        Ok(ids)
+    }
+}
+
+/// The special token ids a single-sequence post-processor puts before and after the text.
+#[cfg(feature = "local-model")]
+fn special_tokens(processor: &serde_json::Value) -> Result<(Vec<u32>, Vec<u32>)> {
+    let id = |value: &serde_json::Value| -> Result<u32> {
+        Ok(u32::try_from(
+            value.as_u64().context("special token id is not a number")?,
+        )?)
+    };
+    match processor["type"].as_str() {
+        Some("TemplateProcessing") => {
+            let mut prefix = Vec::new();
+            let mut suffix = Vec::new();
+            let mut seen_sequence = false;
+            for piece in processor["single"]
+                .as_array()
+                .context("template has no single sequence")?
+            {
+                if piece.get("Sequence").is_some() {
+                    ensure!(!seen_sequence, "template repeats the sequence");
+                    seen_sequence = true;
+                    continue;
+                }
+                let name = piece["SpecialToken"]["id"]
+                    .as_str()
+                    .context("template piece is neither a sequence nor a special token")?;
+                ensure!(
+                    piece["SpecialToken"]["type_id"].as_u64().unwrap_or(0) == 0,
+                    "single-sequence special tokens must have type id 0"
+                );
+                let ids = processor["special_tokens"][name]["ids"]
+                    .as_array()
+                    .with_context(|| format!("template special token {name} has no ids"))?;
+                let target = if seen_sequence {
+                    &mut suffix
+                } else {
+                    &mut prefix
+                };
+                for value in ids {
+                    target.push(id(value)?);
+                }
+            }
+            ensure!(seen_sequence, "template has no sequence");
+            Ok((prefix, suffix))
+        }
+        Some("BertProcessing" | "RobertaProcessing") => Ok((
+            vec![id(&processor["cls"][1])?],
+            vec![id(&processor["sep"][1])?],
+        )),
+        Some(other) => anyhow::bail!("unsupported tokenizer post-processor {other}"),
+        None => Ok((Vec::new(), Vec::new())),
+    }
+}
+
+/// A token's id from the added tokens or the model vocabulary of a `tokenizer.json`.
+#[cfg(feature = "local-model")]
+fn token_id(definition: &serde_json::Value, token: &str) -> Option<u32> {
+    let added = definition["added_tokens"].as_array().and_then(|tokens| {
+        tokens
+            .iter()
+            .find(|added| added["content"].as_str() == Some(token))
+            .and_then(|added| added["id"].as_u64())
+    });
+    let vocabulary = &definition["model"]["vocab"];
+    let id = added.or_else(|| vocabulary[token].as_u64()).or_else(|| {
+        vocabulary.as_array().and_then(|pieces| {
+            pieces
+                .iter()
+                .position(|piece| piece[0].as_str() == Some(token))
+                .map(|index| index as u64)
+        })
+    })?;
+    u32::try_from(id).ok()
+}
+
+/// CLS takes each row's first token. Mean averages the tokens the attention mask keeps.
+#[cfg(feature = "local-model")]
+fn pool(
+    pack: ModelPack,
+    values: &[f32],
+    mask: &[i64],
+    rows: usize,
+    width: usize,
+    dimensions: usize,
+) -> Vec<Vec<f32>> {
+    (0..rows)
+        .map(|row| {
+            let token = |index: usize| {
+                let start = (row * width + index) * dimensions;
+                &values[start..start + dimensions]
+            };
+            match pack {
+                ModelPack::BgeSmallEn => token(0).to_vec(),
+                ModelPack::MultilingualE5Small => {
+                    let mut sum = vec![0.0f32; dimensions];
+                    let mut kept = 0.0f32;
+                    for index in 0..width {
+                        let weight = mask[row * width + index] as f32;
+                        kept += weight;
+                        for (total, value) in sum.iter_mut().zip(token(index)) {
+                            *total += weight * value;
+                        }
+                    }
+                    let kept = if kept == 0.0 { 1.0 } else { kept };
+                    sum.into_iter().map(|total| total / kept).collect()
+                }
+            }
+        })
+        .collect()
+}
+
 /// Encodes raw text entirely offline after a model pack has been installed.
 pub struct LocalEncoder {
     #[cfg(feature = "local-model")]
     pack: ModelPack,
     #[cfg(feature = "local-model")]
-    runtime: fastembed::TextEmbedding,
+    tokenizer: TextTokenizer,
+    #[cfg(feature = "local-model")]
+    session: ort::session::Session,
+    #[cfg(feature = "local-model")]
+    token_types: bool,
     #[cfg(not(feature = "local-model"))]
     _unavailable: std::convert::Infallible,
+}
+
+/// Token limit for every pack, recorded in the embedding manifest.
+#[cfg(feature = "local-model")]
+const MAX_TOKENS: usize = 512;
+
+/// One ONNX Runtime environment per process, shared by every encoder.
+#[cfg(feature = "local-model")]
+fn onnx_environment() -> Result<ort::environment::Environment> {
+    static ENVIRONMENT: std::sync::Mutex<Option<ort::environment::Environment>> =
+        std::sync::Mutex::new(None);
+    let mut shared = ENVIRONMENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(environment) = shared.as_ref() {
+        return Ok(environment.clone());
+    }
+    let environment = ort::init()
+        .build()
+        .map_err(|error| anyhow::anyhow!("starting ONNX Runtime: {error}"))?;
+    *shared = Some(environment.clone());
+    Ok(environment)
 }
 
 impl LocalEncoder {
     #[cfg(feature = "local-model")]
     fn encode(&mut self, texts: &[String], query: bool, batch: usize) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
         let (query_prefix, passage_prefix) = self.pack.prefixes();
         let prefix = if query { query_prefix } else { passage_prefix };
-        let inputs = texts
-            .iter()
-            .map(|text| format!("{prefix}{text}"))
-            .collect::<Vec<_>>();
-        let vectors = self.runtime.embed(inputs, Some(batch))?;
+        let mut vectors = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(batch.max(1)) {
+            let inputs = chunk
+                .iter()
+                .map(|text| format!("{prefix}{text}"))
+                .collect::<Vec<_>>();
+            vectors.extend(self.run(inputs)?);
+        }
         ensure!(
             vectors.len() == texts.len(),
             "encoder returned an unexpected number of vectors"
         );
-        vectors
+        Ok(vectors)
+    }
+
+    /// Tokenize one padded batch, run the model, and pool each row.
+    #[cfg(feature = "local-model")]
+    fn run(&mut self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        use ort::value::Tensor;
+        let encodings = inputs
+            .iter()
+            .map(|text| self.tokenizer.encode(text))
+            .collect::<Result<Vec<_>>>()?;
+        let rows = encodings.len();
+        // Pad every row to the longest one in the batch.
+        let width = encodings.iter().map(Vec::len).max().unwrap_or(0);
+        ensure!(rows > 0 && width > 0, "the tokenizer produced no tokens");
+        let mut ids = Vec::with_capacity(rows * width);
+        let mut mask = Vec::with_capacity(rows * width);
+        for encoding in &encodings {
+            let padding = width - encoding.len();
+            ids.extend(encoding.iter().map(|&id| i64::from(id)));
+            ids.extend(std::iter::repeat_n(
+                i64::from(self.tokenizer.pad_id),
+                padding,
+            ));
+            mask.extend(std::iter::repeat_n(1, encoding.len()));
+            mask.extend(std::iter::repeat_n(0, padding));
+        }
+        // A single sequence has type id 0 throughout, padding included.
+        let types = vec![0i64; rows * width];
+        let shape = [rows as i64, width as i64];
+        let mut feed = ort::inputs![
+            "input_ids" => Tensor::from_array((shape, ids))?,
+            "attention_mask" => Tensor::from_array((shape, mask.clone()))?,
+        ];
+        if self.token_types {
+            feed.push((
+                "token_type_ids".into(),
+                Tensor::from_array((shape, types))?.into(),
+            ));
+        }
+        let outputs = self
+            .session
+            .run(feed)
+            .map_err(|error| anyhow::anyhow!("running the ONNX model: {error}"))?;
+        // A sole output, else the first of the names sentence encoders use.
+        let name = if outputs.len() == 1 {
+            outputs.keys().next().map(str::to_owned)
+        } else {
+            ["text_embeds", "last_hidden_state", "sentence_embedding"]
+                .into_iter()
+                .find(|name| outputs.contains_key(name))
+                .map(str::to_owned)
+        }
+        .context("the model has no embedding output")?;
+        let output = &outputs[name.as_str()];
+        let (dims, values) = output
+            .try_extract_tensor::<f32>()
+            .map_err(|error| anyhow::anyhow!("reading the model output: {error}"))?;
+        let dims = dims.iter().map(|&dim| dim as usize).collect::<Vec<_>>();
+        let pooled = match dims.as_slice() {
+            [batch, dimensions] if *batch == rows => values
+                .chunks(*dimensions)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
+            [batch, tokens, dimensions] if *batch == rows && *tokens == width => {
+                pool(self.pack, values, &mask, rows, width, *dimensions)
+            }
+            _ => anyhow::bail!("unexpected model output shape {dims:?}"),
+        };
+        pooled
             .into_iter()
             .map(|vector| crate::normalize(&vector, 384))
             .collect()

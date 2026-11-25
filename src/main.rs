@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, ensure};
 mod service;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use loci_search::{
     Embedding, Passage, Query,
     bench::{self, Run},
     elastic, fixture,
-    index::{Engine, ingest, ingest_compact},
+    index::{Engine, ingest},
     profile,
     ranking::{RegionalRerank, SearchConfig, Strategy},
 };
@@ -169,6 +169,9 @@ enum Command {
         /// Store the canonical snapshot without duplicate on-disk regional postings.
         #[arg(long)]
         compact: bool,
+        /// Store corpus document frequencies and score with the Palace ranker.
+        #[arg(long)]
+        palace: bool,
         #[arg(long, default_value_t = 1024)]
         leaf_size: usize,
     },
@@ -218,12 +221,19 @@ enum Command {
         repeats: usize,
         #[arg(long, default_value_t = 12)]
         exact_queries: usize,
-        /// Encode each query from its text with this installed pack and add that time to every sample.
-        #[arg(long, value_enum)]
-        embed_model: Option<loci_search::embedding::ModelPack>,
+        /// Encode each query from its text and add that time to every sample.
+        ///
+        /// `bge-small-en-v1.5` and `multilingual-e5-small` use an installed FastEmbed pack.
+        /// `minilm-l6-v2-q8` uses the rc.11 sidecar, one text per call.
+        #[arg(long, value_parser = parse_bench_embed)]
+        embed_model: Option<BenchEmbed>,
         /// Model directory written by `loci model-install` (`<data>/models`).
-        #[arg(long, requires = "embed_model")]
+        /// Required for a FastEmbed pack. The MiniLM sidecar does not use it.
+        #[arg(long)]
         model_cache: Option<PathBuf>,
+        /// After the one-query passes, time the queries at each of these concurrent widths.
+        #[arg(long, value_delimiter = ',')]
+        throughput_width: Vec<usize>,
         /// Separate development-query JSONL used to tune the comparison.
         #[arg(long, requires = "elastic_url", conflicts_with = "frozen_report")]
         dev: Option<PathBuf>,
@@ -463,6 +473,7 @@ fn main() -> Result<()> {
             embedding,
             vectors,
             compact,
+            palace,
             leaf_size,
         } => {
             let mut passages = jsonl::<Passage>(&passages)?;
@@ -470,10 +481,15 @@ fn main() -> Result<()> {
             if let Some(path) = vectors {
                 read_packed_vectors(&path, &mut passages, embedding.dimensions)?;
             }
+            let profile = palace.then_some(loci_search::index::RetrievalProfile::Palace);
             let manifest = if compact {
-                ingest_compact(&db, passages, embedding, leaf_size)?
+                loci_search::index::ingest_compact_with_profile(
+                    &db, passages, embedding, leaf_size, profile,
+                )?
             } else {
-                ingest(&db, passages, embedding, leaf_size)?
+                loci_search::index::ingest_with_profile(
+                    &db, passages, embedding, leaf_size, profile,
+                )?
             };
             print_json(&manifest)?;
         }
@@ -549,6 +565,7 @@ fn main() -> Result<()> {
             exact_queries,
             embed_model,
             model_cache,
+            throughput_width,
             dev,
             transfer_report,
             head_to_head,
@@ -587,6 +604,15 @@ fn main() -> Result<()> {
                 index_bytes: index_bytes(&db)?,
                 ingest_ms,
                 open_ms: started.elapsed().as_secs_f64() * 1000.0,
+                throughput_widths: throughput_width,
+                throughput_encoder: match &embed_model {
+                    Some(BenchEmbed::Pack(model)) => Some(bench::ThroughputEncoder::Pack {
+                        model: *model,
+                        cache: model_cache.clone().context("provide --model-cache")?,
+                    }),
+                    Some(BenchEmbed::MiniLm) => Some(bench::ThroughputEncoder::MiniLm),
+                    None => None,
+                },
             };
             eprintln!(
                 "Loaded {} chunks and {} evaluation queries",
@@ -594,7 +620,7 @@ fn main() -> Result<()> {
                 queries.len()
             );
             let mut encoder = match embed_model {
-                Some(model) => {
+                Some(BenchEmbed::Pack(model)) => {
                     let cache = model_cache.context("provide --model-cache")?;
                     ensure!(
                         engine.manifest.embedding == model.manifest(),
@@ -602,12 +628,24 @@ fn main() -> Result<()> {
                         engine.manifest.embedding.model_revision,
                         model.id()
                     );
-                    Some(model.open(&cache)?)
+                    Some(QueryEncoder::Pack(model.open(&cache)?))
+                }
+                Some(BenchEmbed::MiniLm) => {
+                    ensure!(
+                        engine.manifest.embedding == loci_search::generation::minilm_embedding(),
+                        "index embedding {} is not {}",
+                        engine.manifest.embedding.model_revision,
+                        loci_search::generation::MODEL_ID
+                    );
+                    let (model, vocab) = loci_search::palace::pinned_minilm();
+                    Some(QueryEncoder::MiniLm(loci_search::palace::MiniLm::open(
+                        &model, &vocab, 1,
+                    )?))
                 }
                 None => None,
             };
             let mut embed = encoder.as_mut().map(|encoder| {
-                Box::new(move |text: &str| encoder.embed_query(text))
+                Box::new(move |text: &str| encoder.embed(text))
                     as Box<dyn FnMut(&str) -> Result<Vec<f32>>>
             });
             let embed = embed.as_mut().map(|encode| encode.as_mut());
@@ -684,6 +722,39 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Clone)]
+enum BenchEmbed {
+    Pack(loci_search::embedding::ModelPack),
+    MiniLm,
+}
+
+fn parse_bench_embed(value: &str) -> Result<BenchEmbed, String> {
+    if value == loci_search::generation::MODEL_ID {
+        Ok(BenchEmbed::MiniLm)
+    } else {
+        loci_search::embedding::ModelPack::from_str(value, true)
+            .map(BenchEmbed::Pack)
+            .map_err(|error| error.to_string())
+    }
+}
+
+enum QueryEncoder {
+    Pack(loci_search::embedding::LocalEncoder),
+    MiniLm(loci_search::palace::MiniLm),
+}
+
+impl QueryEncoder {
+    fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
+        match self {
+            Self::Pack(encoder) => encoder.embed_query(text),
+            Self::MiniLm(encoder) => {
+                let mut vectors = encoder.embed(&[text])?;
+                vectors.pop().context("missing MiniLM query vector")
+            }
+        }
+    }
 }
 
 fn embed_corpus(

@@ -62,6 +62,8 @@ pub struct Report {
     #[serde(skip_serializing_if = "Option::is_none")]
     global_rescue_budget_hits: Option<usize>,
     exact_reference: Vec<Reference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    throughput: Option<Vec<ThroughputRow>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,10 +100,13 @@ struct Summary {
     candidate_recall: Option<f64>,
     ndcg_at_10: Option<f64>,
     recall_at_100: Option<f64>,
+    /// Fraction of positive judgments present in the top five hits.
+    evidence_at_5: Option<f64>,
     all_evidence_at_100: Option<f64>,
     lexical_rescue_relevant_candidates_mean: f64,
     p50_ms: f64,
     p95_ms: f64,
+    p99_ms: f64,
     regions_expanded_mean: f64,
     regional_postings_read_mean: f64,
     vector_comparisons_mean: Option<f64>,
@@ -126,6 +131,7 @@ struct Quality {
     candidate_recall: Option<f64>,
     ndcg_at_10: Option<f64>,
     recall_at_100: Option<f64>,
+    evidence_at_5: Option<f64>,
     all_evidence_at_100: Option<f64>,
     lexical_rescue_relevant_candidates: usize,
 }
@@ -165,6 +171,9 @@ pub struct Run {
     pub index_bytes: u64,
     pub ingest_ms: Option<f64>,
     pub open_ms: f64,
+    /// Concurrent worker counts timed after the one-query passes.
+    pub throughput_widths: Vec<usize>,
+    pub throughput_encoder: Option<ThroughputEncoder>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -769,6 +778,11 @@ fn evaluate_with(
     };
     let embed_p50_ms = (!embed_times.is_empty()).then(|| percentile(&mut embed_times, 0.50));
     let embed_p95_ms = (!embed_times.is_empty()).then(|| percentile(&mut embed_times, 0.95));
+    let throughput = if run.throughput_widths.is_empty() {
+        None
+    } else {
+        Some(measure_throughput(engine, queries, &settings, client, run)?)
+    };
     Ok(Report {
         version: env!("CARGO_PKG_VERSION"),
         platform: (std::env::consts::OS, std::env::consts::ARCH),
@@ -802,7 +816,166 @@ fn evaluate_with(
         global_rescue_budget_hits,
         regional_or_rescue_scoring,
         exact_reference,
+        throughput,
     })
+}
+
+#[derive(Debug, Serialize)]
+struct ThroughputRow {
+    strategy: Strategy,
+    width: usize,
+    queries: usize,
+    elapsed_ms: f64,
+    queries_per_second: f64,
+    p50_ms: f64,
+    p95_ms: f64,
+    p99_ms: f64,
+}
+
+/// How each concurrent worker encodes query text. Every worker opens its own
+/// single-threaded encoder before the clock starts.
+#[derive(Clone, Debug)]
+pub enum ThroughputEncoder {
+    Pack {
+        model: crate::embedding::ModelPack,
+        cache: std::path::PathBuf,
+    },
+    MiniLm,
+}
+
+enum WorkerEncoder {
+    Pack(Box<crate::embedding::LocalEncoder>),
+    MiniLm(crate::palace::MiniLm),
+}
+
+impl WorkerEncoder {
+    fn open(encoder: &ThroughputEncoder) -> Result<Self> {
+        Ok(match encoder {
+            ThroughputEncoder::Pack { model, cache } => {
+                Self::Pack(Box::new(model.open_threads(cache, 1)?))
+            }
+            ThroughputEncoder::MiniLm => {
+                let (model, vocab) = crate::palace::pinned_minilm();
+                Self::MiniLm(crate::palace::MiniLm::open(&model, &vocab, 1)?)
+            }
+        })
+    }
+
+    fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
+        match self {
+            Self::Pack(encoder) => encoder.embed_query(text),
+            Self::MiniLm(encoder) => encoder
+                .embed(&[text])?
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("missing MiniLM query vector")),
+        }
+    }
+}
+
+/// Time every query at each configured width of concurrent workers over one shared,
+/// prepared engine. Each sample covers query encoding (when configured) and the search,
+/// including the Elasticsearch request.
+fn measure_throughput(
+    engine: &mut Engine,
+    queries: &[Query],
+    plans: &[Plan],
+    client: Option<&elastic::Client>,
+    run: &Run,
+) -> Result<Vec<ThroughputRow>> {
+    let mut rows = Vec::new();
+    let plans = plans
+        .iter()
+        .filter(|plan| matches!(plan.strategy, Strategy::Regional | Strategy::Elasticsearch))
+        .collect::<Vec<_>>();
+    for plan in &plans {
+        if plan.elastic.is_none() {
+            engine.prepare(plan.strategy, &plan.config)?;
+        }
+    }
+    let engine: &Engine = engine;
+    let total = queries.len() * run.repeats.max(1);
+    for &width in &run.throughput_widths {
+        ensure!(width > 0, "throughput width must be positive");
+        for plan in &plans {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let ready = std::sync::Barrier::new(width + 1);
+            let (started, outcomes) = std::thread::scope(|scope| {
+                let workers = (0..width)
+                    .map(|_| {
+                        scope.spawn(|| -> Result<Vec<f64>> {
+                            let encoder = run
+                                .throughput_encoder
+                                .as_ref()
+                                .map(WorkerEncoder::open)
+                                .transpose();
+                            ready.wait();
+                            let mut encoder = encoder?;
+                            let mut times = Vec::new();
+                            loop {
+                                let index =
+                                    next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if index >= total {
+                                    return Ok(times);
+                                }
+                                let began = Instant::now();
+                                let source = &queries[index % queries.len()];
+                                let encoded;
+                                let query = match encoder.as_mut() {
+                                    Some(encoder) => {
+                                        let mut query = source.clone();
+                                        query.vector = encoder.embed(&query.text)?;
+                                        encoded = query;
+                                        &encoded
+                                    }
+                                    None => source,
+                                };
+                                match plan.elastic {
+                                    Some(options) => client
+                                        .expect("configured Elasticsearch")
+                                        .search(engine, query, &plan.config, options)?,
+                                    None => engine.search_prepared(
+                                        query,
+                                        plan.strategy,
+                                        &plan.config,
+                                    )?,
+                                };
+                                times.push(milliseconds(began));
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                ready.wait();
+                let started = Instant::now();
+                let outcomes = workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("throughput worker panicked"))
+                    .collect::<Vec<_>>();
+                (started, outcomes)
+            });
+            let elapsed = started.elapsed().as_secs_f64().max(0.001);
+            let mut times = Vec::with_capacity(total);
+            for outcome in outcomes {
+                times.extend(outcome?);
+            }
+            ensure!(times.len() == total, "throughput run lost samples");
+            let row = ThroughputRow {
+                strategy: plan.strategy,
+                width,
+                queries: total,
+                elapsed_ms: elapsed * 1000.0,
+                queries_per_second: total as f64 / elapsed,
+                p50_ms: percentile(&mut times, 0.50),
+                p95_ms: percentile(&mut times, 0.95),
+                p99_ms: percentile(&mut times, 0.99),
+            };
+            eprintln!(
+                "throughput {:?} width {width}: {:.1} q/s, p95 {:.2} ms",
+                row.strategy, row.queries_per_second, row.p95_ms
+            );
+            rows.push(row);
+        }
+    }
+    Ok(rows)
 }
 
 fn tune(
@@ -1040,6 +1213,7 @@ fn quality(query: &Query, ranked: &[&str], result: &SearchResult) -> Quality {
         candidate_recall: recall(&candidates),
         ndcg_at_10: (count > 0).then(|| dcg(&returned) / dcg(&ideal)),
         recall_at_100: recall(&top),
+        evidence_at_5: recall(&ranked.iter().take(5).copied().collect::<BTreeSet<_>>()),
         all_evidence_at_100: (!query.required.is_empty())
             .then(|| f64::from(query.required.iter().all(|id| top.contains(id.as_str())))),
         lexical_rescue_relevant_candidates: rescue,
@@ -1071,12 +1245,14 @@ fn summarize(strategy: Strategy, group: &str, samples: &[Sample]) -> Summary {
         candidate_recall: quality_mean(|q| q.candidate_recall),
         ndcg_at_10: quality_mean(|q| q.ndcg_at_10),
         recall_at_100: quality_mean(|q| q.recall_at_100),
+        evidence_at_5: quality_mean(|q| q.evidence_at_5),
         all_evidence_at_100: quality_mean(|q| q.all_evidence_at_100),
         lexical_rescue_relevant_candidates_mean: mean(|s| {
             s.quality.lexical_rescue_relevant_candidates
         }),
         p50_ms: percentile(0.50),
         p95_ms: percentile(0.95),
+        p99_ms: percentile(0.99),
         regions_expanded_mean: mean(|s| s.regions),
         regional_postings_read_mean: mean(|s| s.postings),
         vector_comparisons_mean: (strategy != Strategy::Elasticsearch)
@@ -1146,6 +1322,8 @@ mod tests {
             index_bytes: 0,
             ingest_ms: None,
             open_ms: 0.0,
+            throughput_widths: Vec::new(),
+            throughput_encoder: None,
         };
         let vectors = queries
             .iter()

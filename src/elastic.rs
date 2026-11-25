@@ -1,7 +1,7 @@
 use crate::{
     Query,
-    index::Engine,
-    ranking::{self, SearchConfig, SearchResult},
+    index::{Engine, RetrievalProfile},
+    ranking::{self, Hit, SearchConfig, SearchResult, Strategy},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,7 @@ struct MultiSearch {
 
 #[derive(Deserialize)]
 struct Response {
+    took: Option<u64>,
     error: Option<Value>,
     timed_out: Option<bool>,
     #[serde(rename = "_shards")]
@@ -65,13 +66,15 @@ struct Shards {
 
 #[derive(Deserialize)]
 struct Hits {
-    hits: Vec<Hit>,
+    hits: Vec<EsHit>,
 }
 
 #[derive(Deserialize)]
-struct Hit {
+struct EsHit {
     #[serde(rename = "_id")]
     id: String,
+    #[serde(rename = "_score")]
+    score: Option<f64>,
 }
 
 impl Client {
@@ -145,8 +148,86 @@ impl Client {
         options: Options,
     ) -> Result<SearchResult> {
         let vector = engine.query_vector(query)?;
+        if engine.manifest.retrieval_profile == Some(RetrievalProfile::Palace) {
+            return self.native_hybrid(engine, query, &vector, config, options);
+        }
         let values = self.rankings(engine, query, &vector, config.depth, options)?;
         ranking::search_external(engine, query, &vector, config, values)
+    }
+
+    /// Elasticsearch combines BM25 and kNN itself. The hit order and scores are
+    /// Elasticsearch's; Loci does not rescore them.
+    fn native_hybrid(
+        &self,
+        engine: &Engine,
+        query: &Query,
+        vector: &[f32],
+        config: &SearchConfig,
+        options: Options,
+    ) -> Result<SearchResult> {
+        let field = match options.analyzer {
+            Analyzer::Standard => "text",
+            Analyzer::English => "text.english",
+        };
+        let body = json!({
+            "size": config.depth,
+            "track_total_hits": false,
+            "_source": false,
+            "query": {"match": {field: &query.text}},
+            "knn": {
+                "field": "embedding",
+                "query_vector": vector,
+                "k": config.depth,
+                "num_candidates": options.num_candidates
+            }
+        });
+        let mut response = self
+            .agent
+            .post(format!("{}/{}/_search", self.base, self.index))
+            .header("Content-Type", "application/json")
+            .send_json(&body)
+            .with_context(|| format!("Elasticsearch hybrid query {}", query.id))?;
+        let result: Response = response.body_mut().read_json()?;
+        if let Some(error) = result.error {
+            bail!("Elasticsearch query {} failed: {error}", query.id);
+        }
+        ensure!(
+            result.timed_out == Some(false)
+                && result.shards.is_some_and(|shards| shards.failed == 0),
+            "incomplete Elasticsearch response for {}",
+            query.id
+        );
+        let took = result.took;
+        let returned = result.hits.context("missing Elasticsearch hits")?.hits;
+        let mut hits = Vec::new();
+        let mut candidates = Vec::new();
+        for hit in returned.into_iter().take(config.limit) {
+            let index = engine.ids.binary_search(&hit.id).map_err(|_| {
+                anyhow::anyhow!("Elasticsearch returned unknown passage {}", hit.id)
+            })?;
+            candidates.push(hit.id);
+            hits.push(Hit {
+                source: engine.source(index)?,
+                score: hit.score.unwrap_or(0.0),
+                lexical_rank: None,
+                vector_rank: None,
+                global_lexical_rank: None,
+                graph_rank: None,
+                routes: Vec::new(),
+            });
+        }
+        Ok(SearchResult {
+            strategy: Strategy::Elasticsearch,
+            hits,
+            candidates,
+            lexical_rescue_only_candidates: Vec::new(),
+            expanded: Vec::new(),
+            stop_reason: "elasticsearch_hybrid",
+            work: ranking::Work {
+                elasticsearch_took_ms: took,
+                ..ranking::Work::default()
+            },
+        })
     }
 
     fn rankings(

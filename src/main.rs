@@ -122,7 +122,7 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Hold one prepared engine with a frozen regional plan and answer `POST /search` over HTTP.
+    /// Hold one prepared engine with a frozen regional or hybrid plan and answer `POST /search` over HTTP.
     BenchServe {
         #[arg(long)]
         db: PathBuf,
@@ -650,18 +650,24 @@ fn main() -> Result<()> {
             settings,
         } => {
             let query = json::<Query>(&query)?;
-            let mut config: SearchConfig = settings.into();
+            let base: SearchConfig = settings.into();
+            // Hybrid search starts from the `loci serve` defaults; the flags below override them.
+            let mut config = if strategy == Strategy::Hybrid {
+                SearchConfig::hybrid(base.limit)
+            } else {
+                base
+            };
             if let Some(path) = regional_rerank {
                 ensure!(
-                    strategy == Strategy::Regional,
-                    "--regional-rerank requires regional search"
+                    strategy.uses_rescue(),
+                    "--regional-rerank requires regional or hybrid search"
                 );
                 config.regional_rerank = Some(json(&path)?);
             }
             if rescue_max_scored.is_some() {
                 ensure!(
-                    strategy == Strategy::Regional,
-                    "--rescue-max-scored requires regional search"
+                    strategy.uses_rescue(),
+                    "--rescue-max-scored requires regional or hybrid search"
                 );
                 config.rescue_max_scored = rescue_max_scored;
             }
@@ -681,8 +687,8 @@ fn main() -> Result<()> {
             }
             if graph_candidates.is_some() {
                 ensure!(
-                    strategy == Strategy::Regional,
-                    "--graph-candidates requires regional search"
+                    strategy.uses_rescue(),
+                    "--graph-candidates requires regional or hybrid search"
                 );
                 config.graph_candidates = graph_candidates;
             }

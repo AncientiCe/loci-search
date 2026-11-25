@@ -3,7 +3,8 @@ use clap::ValueEnum;
 use loci_search::{
     Embedding, Passage, Query,
     embedding::{LocalEncoder, ModelPack},
-    index::{Engine, ingest_compact},
+    generation,
+    index::Engine,
     ranking::{SearchConfig, Strategy},
     store::{Document, EncodedPassage, Filter, Mutation, PreparedDocument, Snapshot},
 };
@@ -46,15 +47,34 @@ pub(super) fn validate_settings(settings: &Value) -> Result<()> {
     ensure!(
         fields.keys().all(|key| matches!(
             key.as_str(),
-            "model" | "mappings" | "stream" | "default_visibility"
+            "model" | "mappings" | "stream" | "default_visibility" | "retrieval_profile"
         )),
         "unsupported index setting"
     );
+    let palace = fields
+        .get("retrieval_profile")
+        .and_then(Value::as_str)
+        == Some("palace");
+    if let Some(profile) = fields.get("retrieval_profile") {
+        ensure!(
+            profile.as_str() == Some("palace"),
+            "retrieval_profile must be palace"
+        );
+    }
     if let Some(model) = fields.get("model") {
         let name = model.as_str().context("model must be a string")?;
-        if name != "lexical" {
+        if name == generation::MODEL_ID {
+            ensure!(
+                palace,
+                "minilm-l6-v2-q8 requires retrieval_profile palace"
+            );
+        } else if palace || name == "lexical" {
+            ensure!(!palace, "palace text indexes use minilm-l6-v2-q8");
+        } else {
             ModelPack::from_str(name, false).map_err(anyhow::Error::msg)?;
         }
+    } else if palace {
+        anyhow::bail!("palace text indexes set model to minilm-l6-v2-q8");
     }
     Ok(())
 }
@@ -201,7 +221,18 @@ impl RegionalService {
         let pack = ModelPack::from_str(model, false).map_err(anyhow::Error::msg)?;
         // The topology itself contains landmark IDs. Build only from eligible documents so
         // a route, candidate ID, or explanation cannot disclose a different reader's data.
-        let key = serde_json::to_vec(&(name, snapshot.generation, model, principals, &req.filter))?;
+        let profile = settings
+            .get("retrieval_profile")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let key = serde_json::to_vec(&(
+            name,
+            snapshot.generation,
+            model,
+            profile,
+            principals,
+            &req.filter,
+        ))?;
         let slot = self.slot(Sha256::digest(key).to_vec())?;
         let encoder = self.encoder(pack)?;
         let manifest = pack.manifest();
@@ -221,6 +252,7 @@ impl RegionalService {
                     persisted,
                     &manifest,
                     &mut enc,
+                    profile == "palace",
                 )?));
             }
             entry.as_ref().context("missing search projection")?.clone()
@@ -266,6 +298,7 @@ fn build<'a>(
     mut persisted: Vec<Passage>,
     embedding: &Embedding,
     encoder: &mut LocalEncoder,
+    palace: bool,
 ) -> Result<Projection> {
     let workspace = tempfile::tempdir()?;
     let db = workspace.path().join("regional.sqlite");
@@ -296,7 +329,14 @@ fn build<'a>(
         }
     }
     persisted.extend(passages);
-    ingest_compact(&db, persisted, embedding.clone(), 64)?;
+    let profile = palace.then_some(loci_search::index::RetrievalProfile::Palace);
+    loci_search::index::ingest_compact_with_profile(
+        &db,
+        persisted,
+        embedding.clone(),
+        64,
+        profile,
+    )?;
     Ok(Projection {
         _workspace: workspace,
         db,

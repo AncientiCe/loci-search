@@ -11,7 +11,7 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS postings (
 CREATE TABLE IF NOT EXISTS term_stats (term TEXT PRIMARY KEY, df INTEGER NOT NULL) WITHOUT ROWID;
 ";
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalProfile {
+    Palace,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Manifest {
     pub schema: u32,
@@ -47,6 +53,9 @@ pub struct Manifest {
     pub regions: usize,
     pub leaf_size: usize,
     pub average_length: f64,
+    /// Absent keeps the coverage ranker, including indexes built before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_profile: Option<RetrievalProfile>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,7 +83,7 @@ pub fn ingest(
     embedding: Embedding,
     leaf_size: usize,
 ) -> Result<Manifest> {
-    ingest_with_layout(path, passages, embedding, leaf_size, false)
+    ingest_with_layout(path, passages, embedding, leaf_size, false, None)
 }
 
 /// Store canonical text and memberships without duplicating reconstructed regional postings.
@@ -84,7 +93,27 @@ pub fn ingest_compact(
     embedding: Embedding,
     leaf_size: usize,
 ) -> Result<Manifest> {
-    ingest_with_layout(path, passages, embedding, leaf_size, true)
+    ingest_with_layout(path, passages, embedding, leaf_size, true, None)
+}
+
+pub fn ingest_with_profile(
+    path: &Path,
+    passages: Vec<Passage>,
+    embedding: Embedding,
+    leaf_size: usize,
+    profile: Option<RetrievalProfile>,
+) -> Result<Manifest> {
+    ingest_with_layout(path, passages, embedding, leaf_size, false, profile)
+}
+
+pub fn ingest_compact_with_profile(
+    path: &Path,
+    passages: Vec<Passage>,
+    embedding: Embedding,
+    leaf_size: usize,
+    profile: Option<RetrievalProfile>,
+) -> Result<Manifest> {
+    ingest_with_layout(path, passages, embedding, leaf_size, true, profile)
 }
 
 fn ingest_with_layout(
@@ -93,6 +122,7 @@ fn ingest_with_layout(
     embedding: Embedding,
     leaf_size: usize,
     compact: bool,
+    profile: Option<RetrievalProfile>,
 ) -> Result<Manifest> {
     ensure!(!passages.is_empty(), "at least one passage is required");
     ensure!(
@@ -150,6 +180,7 @@ fn ingest_with_layout(
         regions: topology.regions.len(),
         leaf_size,
         average_length: total_length as f64 / passages.len() as f64,
+        retrieval_profile: profile,
     };
     let mut conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
@@ -225,8 +256,78 @@ fn ingest_with_layout(
             stat.execute(params![term, df])?;
         }
     }
+    if profile == Some(RetrievalProfile::Palace) {
+        write_palace_stats(&tx, &passages)?;
+    }
     tx.commit()?;
     Ok(manifest)
+}
+
+fn write_palace_stats(tx: &rusqlite::Transaction<'_>, passages: &[Passage]) -> Result<()> {
+    tx.execute_batch(
+        "
+        CREATE TABLE palace_doc (artifact INTEGER PRIMARY KEY, length INTEGER NOT NULL);
+        CREATE TABLE palace_df (term TEXT PRIMARY KEY, df INTEGER NOT NULL) WITHOUT ROWID;
+        ",
+    )?;
+    let texts: Vec<&str> = passages
+        .iter()
+        .map(|passage| passage.text.as_str())
+        .collect();
+    let (corpus, lengths) = crate::palace::build_corpus(&texts);
+    let mut doc = tx.prepare("INSERT INTO palace_doc VALUES (?, ?)")?;
+    for (artifact, length) in lengths.iter().enumerate() {
+        doc.execute(params![artifact, *length as i64])?;
+    }
+    let mut frequency = tx.prepare("INSERT INTO palace_df VALUES (?, ?)")?;
+    for (term, df) in corpus.document_frequency {
+        frequency.execute(params![term, df])?;
+    }
+    Ok(())
+}
+
+pub(crate) struct PalaceStats {
+    pub doc_len: Vec<u32>,
+    pub document_frequency: HashMap<String, u32>,
+    pub documents: f64,
+    pub average_length: f64,
+}
+
+fn load_palace_stats(conn: &Connection, chunks: usize) -> Result<PalaceStats> {
+    let mut doc_len = vec![0u32; chunks];
+    let mut total = 0u64;
+    let mut seen = 0usize;
+    let mut statement = conn.prepare("SELECT artifact, length FROM palace_doc")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let artifact: usize = row.get(0)?;
+        let length: u32 = row.get(1)?;
+        ensure!(artifact < chunks, "palace document id is outside the index");
+        doc_len[artifact] = length;
+        total += u64::from(length);
+        seen += 1;
+    }
+    ensure!(
+        seen == chunks,
+        "palace document lengths do not cover the index"
+    );
+    let mut document_frequency = HashMap::new();
+    let mut statement = conn.prepare("SELECT term, df FROM palace_df")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        document_frequency.insert(row.get(0)?, row.get(1)?);
+    }
+    let documents = chunks as f64;
+    Ok(PalaceStats {
+        doc_len,
+        document_frequency,
+        documents,
+        average_length: if chunks == 0 {
+            0.0
+        } else {
+            total as f64 / documents
+        },
+    })
 }
 
 pub struct Engine {
@@ -239,6 +340,7 @@ pub struct Engine {
     graph: Option<Graph>,
     dense_graph: Option<Graph>,
     regional: Option<RegionalIndex>,
+    pub(crate) palace: Option<PalaceStats>,
     path: PathBuf,
 }
 
@@ -305,6 +407,11 @@ impl Engine {
             ids.len() == manifest.chunks && regions.len() == manifest.regions,
             "incomplete index"
         );
+        let palace = if manifest.retrieval_profile == Some(RetrievalProfile::Palace) {
+            Some(load_palace_stats(&conn, ids.len())?)
+        } else {
+            None
+        };
         Ok(Self {
             manifest,
             conn,
@@ -315,6 +422,7 @@ impl Engine {
             graph: None,
             dense_graph: None,
             regional: None,
+            palace,
             path: path.to_path_buf(),
         })
     }

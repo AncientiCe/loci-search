@@ -1,5 +1,7 @@
 /.impact/
 /target/
+/target-*/
+/encoder/**/target/
 /runs/
 *.sqlite
 *.sqlite-wal

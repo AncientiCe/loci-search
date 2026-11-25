@@ -13,6 +13,7 @@ use axum::{
 use clap::ValueEnum;
 pub use files::{backup, import, restore};
 use loci_search::embedding::ModelPack;
+use loci_search::generation::{self, TextChange, TextUpdate};
 use loci_search::store::{Catalog, Mutation, SearchRequest};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -44,6 +45,7 @@ struct Credential {
 struct App(Arc<Inner>);
 
 struct Inner {
+    data: std::path::PathBuf,
     catalog: Catalog,
     semantic: semantic::RegionalService,
     credentials: Option<Vec<Credential>>,
@@ -72,7 +74,10 @@ fn failure(error: anyhow::Error) -> ApiError {
         || msg.contains("already used for a different batch")
     {
         ApiError(StatusCode::CONFLICT, msg)
-    } else if msg.contains("unknown index") || msg.contains("index does not exist") {
+    } else if msg.contains("unknown index")
+        || msg.contains("index does not exist")
+        || msg.contains("no published generation")
+    {
         ApiError(StatusCode::NOT_FOUND, msg)
     } else if error.downcast_ref::<rusqlite::Error>().is_some()
         || error.downcast_ref::<std::io::Error>().is_some()
@@ -181,10 +186,12 @@ fn listen(
             "invalid credential configuration"
         );
     }
-    fs::create_dir_all(data)?;
+    let data = data.to_path_buf();
+    fs::create_dir_all(&data)?;
     let state = App(Arc::new(Inner {
         catalog: Catalog::open(data.join("catalog.sqlite"))?,
         semantic: semantic::RegionalService::new(&data.join("models"))?,
+        data,
         credentials,
         workers: Arc::new(Semaphore::new(
             std::thread::available_parallelism()
@@ -213,6 +220,7 @@ fn listen(
         .route("/v1/indexes", get(indexes))
         .route("/v1/indexes/{name}", axum::routing::put(create))
         .route("/v1/indexes/{name}/bulk", post(bulk))
+        .route("/v1/indexes/{name}/rebuild", post(rebuild))
         .route("/v1/indexes/{name}/search", post(search))
         .route("/v1/indexes/{name}/suggest", post(suggest))
         .route("/v1/indexes/{name}/expire", post(expire))
@@ -293,6 +301,8 @@ async fn create(
 ) -> Reply {
     app.authorize(&headers, &name, true)?;
     app.blocking(move |s| {
+        let mut settings = settings;
+        generation::apply_new_text_defaults(&mut settings);
         semantic::validate_settings(&settings)?;
         let created = s.catalog.create_index_with_settings(&name, &settings)?;
         Ok(json!({"name":name,"created":created}))
@@ -334,6 +344,13 @@ async fn bulk(
         };
         ensure!(mutations.len() <= 10_000, "bulk limit is 10000 operations");
         let settings = s.catalog.snapshot(&name)?.settings()?;
+        if generation::is_palace(&settings) {
+            let changes = mutations.iter().map(text_change).collect::<Vec<_>>();
+            let mut durable = generation::open_index(&s.data, &name)?;
+            let published = generation::commit_and_publish(&mut durable, &changes)?;
+            s.writes.fetch_add(1, Ordering::Relaxed);
+            return Ok(serde_json::to_value(published)?);
+        }
         let result = if let Some(model) = settings
             .get("model")
             .and_then(Value::as_str)
@@ -385,6 +402,19 @@ async fn search(
 ) -> Reply {
     let principals = app.authorize(&headers, &name, false)?;
     app.blocking(move |s| {
+        let settings = s.catalog.snapshot(&name)?.settings()?;
+        if generation::is_palace(&settings) {
+            let request: PalaceSearch = serde_json::from_value(body)?;
+            let page = generation::search_text(
+                &generation::index_root(&s.data, &name),
+                request.generation.as_deref(),
+                &request.text,
+                request.limit,
+                palace_hold,
+            )?;
+            s.searches.fetch_add(1, Ordering::Relaxed);
+            return Ok(serde_json::to_value(page)?);
+        }
         let obj = body
             .as_object_mut()
             .context("search body must be an object")?;
@@ -495,6 +525,70 @@ struct Suggest {
 }
 fn suggest_limit() -> usize {
     10
+}
+
+async fn rebuild(State(app): State<App>, Path(name): Path<String>, headers: HeaderMap) -> Reply {
+    app.authorize(&headers, &name, true)?;
+    app.blocking(move |s| {
+        let settings = s.catalog.snapshot(&name)?.settings()?;
+        ensure!(
+            generation::is_palace(&settings),
+            "rebuild publishes a palace generation"
+        );
+        let mut durable = generation::open_index(&s.data, &name)?;
+        let published = generation::publish_live(&mut durable)?;
+        Ok(serde_json::to_value(published)?)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PalaceSearch {
+    text: String,
+    #[serde(default = "palace_limit")]
+    limit: usize,
+    #[serde(default)]
+    generation: Option<String>,
+}
+
+fn palace_limit() -> usize {
+    5
+}
+
+fn text_change(operation: &Mutation) -> TextChange {
+    match operation {
+        Mutation::Upsert { document } => TextChange::Upsert(TextUpdate {
+            id: document.id.clone(),
+            revision: document.revision.clone(),
+            text: document.text.clone(),
+            metadata: Value::Object(document.fields.clone().into_iter().collect()),
+        }),
+        Mutation::Delete { id } => TextChange::Delete { id: id.clone() },
+    }
+}
+
+fn palace_hold() {
+    #[cfg(test)]
+    hold_open_reader();
+}
+
+#[cfg(test)]
+struct OpenHold {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+static PALACE_HOLD: std::sync::Mutex<Option<OpenHold>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn hold_open_reader() {
+    let hold = PALACE_HOLD.lock().expect("palace hold").take();
+    if let Some(hold) = hold {
+        let _ = hold.entered.send(());
+        let _ = hold.release.recv_timeout(std::time::Duration::from_secs(60));
+    }
 }
 
 async fn suggest(
@@ -651,5 +745,307 @@ mod tests {
             assert!(QUOTE.contains(&text[start..end]), "{}", &text[start..end]);
         }
         assert!(started.elapsed() < Duration::from_secs(600));
+    }
+
+    #[test]
+    fn architecture_query_survives_without_postgres_and_elasticsearch() {
+        if std::env::var("LOCI_POSTGRES").ok().as_deref() != Some("1") {
+            eprintln!(
+                "skipped: set LOCI_POSTGRES=1 and LOCI_POSTGRES_URL to run the palace generation test"
+            );
+            return;
+        }
+        let url = std::env::var("LOCI_POSTGRES_URL").expect("LOCI_POSTGRES_URL");
+        let running = std::process::Command::new("docker")
+            .args(["inspect", "-f", "{{.State.Running}}", "loci-search-postgres-1"])
+            .output()
+            .expect("docker inspect");
+        assert!(
+            running.status.success() && String::from_utf8_lossy(&running.stdout).trim() == "true",
+            "loci-search-postgres-1 is not running"
+        );
+        let index = format!("n{}", std::process::id());
+        let schema = loci_search::generation::schema_for_index(&index).unwrap();
+        drop_schema(&url, &schema);
+        let _schema = SchemaDrop {
+            url: url.clone(),
+            schema,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = serve_at(dir.path());
+        let agent = ureq::Agent::new_with_defaults();
+        let settings = json!({
+            "model": "minilm-l6-v2-q8",
+            "retrieval_profile": "palace"
+        });
+        assert_eq!(
+            code(agent.put(format!("{base}/v1/indexes/{index}")).send_json(&settings)),
+            200
+        );
+        assert_eq!(
+            code(agent.put(format!("{base}/v1/indexes/logs")).send_json(json!({"model":"lexical"}))),
+            200
+        );
+        assert_eq!(
+            code(agent.post(format!("{base}/v1/indexes/logs/bulk")).send_json(json!({
+                "operations":[{"op":"upsert","document":{"id":"kept","revision":"1","text":"kept event","fields":{"time":1}}}]
+            }))),
+            200
+        );
+        let corpus = corpus_body("1");
+        assert_eq!(
+            code(agent.post(format!("{base}/v1/indexes/{index}/bulk")).send_json(&corpus)),
+            200
+        );
+        let first = palace_hits(&agent, &base, &index, None);
+        assert!(
+            hit_rows(&first)
+                .iter()
+                .any(|hit| hit["citation"].as_str().unwrap().contains("north cabinet")),
+            "{first}"
+        );
+        let generation = first_generation(&agent, &base, &index);
+        let hnsw = dir.path().join("indexes").join(&index).join("generations").join(&generation).join("retrieval.sqlite.hnsw");
+        assert!(hnsw.is_file(), "published generation includes the hnsw sidecar");
+
+        let paused = pause_postgres_and_elasticsearch();
+        let during = palace_hits(&agent, &base, &index, None);
+        assert_eq!(during, first, "query changed while PostgreSQL and Elasticsearch were stopped");
+        let mut lexical = agent
+            .post(format!("{base}/v1/indexes/logs/search"))
+            .send_json(json!({"text":"kept","limit":1}))
+            .unwrap();
+        let lexical: Value = lexical.body_mut().read_json().unwrap();
+        assert_eq!(lexical["hits"][0]["id"], json!("kept"));
+        drop(paused);
+        wait_postgres(&url);
+
+        assert_eq!(
+            code(agent.post(format!("{base}/v1/indexes/{index}/bulk")).send_json(&corpus)),
+            200
+        );
+        assert_eq!(palace_hits(&agent, &base, &index, None), first, "retry changed the hits");
+
+        let root = dir.path().join("indexes").join(&index);
+        let partial = loci_search::durable::Generations::open(&root)
+            .unwrap()
+            .create_staging()
+            .unwrap();
+        std::fs::write(partial.join("manifest.json"), b"{").unwrap();
+        assert_eq!(
+            code(agent.post(format!("{base}/v1/indexes/{index}/rebuild")).send_json(json!({}))),
+            200
+        );
+        assert!(partial.is_dir(), "a partial staging directory stays unpublished");
+        assert_eq!(palace_hits(&agent, &base, &index, None), first);
+
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            code(agent.post(format!("{base}/v1/indexes/{index}/search")).send_json(json!({"text":"brass telescope"}))),
+            404
+        );
+
+        let clean = tempfile::tempdir().unwrap();
+        let rebuilt = serve_at(clean.path());
+        assert_eq!(
+            code(agent.put(format!("{rebuilt}/v1/indexes/{index}")).send_json(&settings)),
+            200
+        );
+        assert_eq!(
+            code(agent.post(format!("{rebuilt}/v1/indexes/{index}/rebuild")).send_json(json!({}))),
+            200
+        );
+        assert_eq!(palace_hits(&agent, &rebuilt, &index, None), first);
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *super::PALACE_HOLD.lock().unwrap() = Some(super::OpenHold {
+            entered: entered_tx,
+            release: release_rx,
+        });
+        let search_base = rebuilt.clone();
+        let search_index = index.clone();
+        let inflight = std::thread::spawn(move || palace_page(&search_base, &search_index, None));
+        entered_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("search did not open the generation");
+        let mut operations = corpus_body("2")["operations"].as_array().unwrap().clone();
+        operations[0] = json!({"op":"upsert","document":{"id":"alpha","revision":"2","text":"The cedar archive sold the brass telescope and stored only empty oak drawers in the north cabinet."}});
+        assert_eq!(
+            code(
+                agent
+                    .post(format!("{rebuilt}/v1/indexes/{index}/bulk"))
+                    .send_json(json!({"operations": operations}))
+            ),
+            200
+        );
+        release_tx.send(()).unwrap();
+        let held_page = inflight.join().unwrap();
+        let held = held_page["hits"].clone();
+        assert_eq!(held, first, "an open reader changed during document replacement");
+        assert!(hit_rows(&held).iter().any(|hit| {
+            let citation = hit["citation"].as_str().unwrap();
+            citation.contains("north cabinet") && !citation.contains("oak drawers")
+        }));
+        let latest = palace_hits(&agent, &rebuilt, &index, None);
+        assert!(
+            hit_rows(&latest)
+                .iter()
+                .any(|hit| hit["citation"].as_str().unwrap().contains("oak drawers"))
+        );
+        assert_ne!(latest, held);
+        let pinned = palace_hits(
+            &agent,
+            &rebuilt,
+            &index,
+            held_page["generation"].as_str(),
+        );
+        assert_eq!(pinned, held);
+    }
+
+    fn serve_at(data: &std::path::Path) -> String {
+        let (sender, receiver) = mpsc::channel();
+        let data = data.to_path_buf();
+        std::thread::spawn(move || {
+            listen(
+                "127.0.0.1:0".parse().unwrap(),
+                &data,
+                None,
+                Some(sender),
+            )
+            .unwrap();
+        });
+        let addr = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        format!("http://{addr}")
+    }
+
+    fn corpus_body(revision: &str) -> Value {
+        json!({"operations":[
+            {"op":"upsert","document":{"id":"alpha","revision":revision,"text":"The cedar archive keeps the brass telescope in the north cabinet beside the river maps and tide tables."}},
+            {"op":"upsert","document":{"id":"beta","revision":revision,"text":"Moth survey notes record silver wing dust on the lantern glass after midnight in the east marsh."}},
+            {"op":"upsert","document":{"id":"gamma","revision":revision,"text":"The kiln log says the cobalt glaze cracked when the west wind reached the drying yard at dawn."}}
+        ]})
+    }
+
+    fn palace_page(base: &str, index: &str, generation: Option<&str>) -> Value {
+        let mut request = json!({"text": "brass telescope", "limit": 5});
+        if let Some(generation) = generation {
+            request["generation"] = json!(generation);
+        }
+        let mut response = ureq::Agent::new_with_defaults()
+            .post(format!("{base}/v1/indexes/{index}/search"))
+            .send_json(&request)
+            .unwrap();
+        response.body_mut().read_json().unwrap()
+    }
+
+    fn hit_rows(value: &Value) -> &[Value] {
+        value.as_array().map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn palace_hits(agent: &ureq::Agent, base: &str, index: &str, generation: Option<&str>) -> Value {
+        let _ = agent;
+        palace_page(base, index, generation)["hits"].clone()
+    }
+
+    fn first_generation(agent: &ureq::Agent, base: &str, index: &str) -> String {
+        let _ = agent;
+        palace_page(base, index, None)["generation"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn drop_schema(url: &str, schema: &str) {
+        let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
+        client
+            .batch_execute(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .unwrap();
+    }
+
+    fn wait_postgres(url: &str) {
+        let started = Instant::now();
+        loop {
+            if postgres::Client::connect(url, postgres::NoTls).is_ok() {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "PostgreSQL did not accept connections again"
+            );
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    struct SchemaDrop {
+        url: String,
+        schema: String,
+    }
+
+    impl Drop for SchemaDrop {
+        fn drop(&mut self) {
+            if let Ok(mut client) = postgres::Client::connect(&self.url, postgres::NoTls) {
+                let _ = client.batch_execute(&format!(
+                    "DROP SCHEMA IF EXISTS {} CASCADE",
+                    self.schema
+                ));
+            }
+        }
+    }
+
+    struct Paused {
+        commands: Vec<String>,
+    }
+
+    impl Drop for Paused {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("docker")
+                .args(["start", "loci-search-postgres-1"])
+                .status();
+            for command in &self.commands {
+                let _ = std::process::Command::new("powershell")
+                    .args([
+                        "-NoProfile",
+                        "-Command",
+                        "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:LOCI_RESTART } | Out-Null",
+                    ])
+                    .env("LOCI_RESTART", command)
+                    .status();
+            }
+        }
+    }
+
+    fn pause_postgres_and_elasticsearch() -> Paused {
+        let listing = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$needle = 'elasticsearch' + '.bat'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'cmd.exe' -and $_.CommandLine -like ('*' + $needle + '*') } | ForEach-Object { $_.ProcessId.ToString() + \"`t\" + $_.CommandLine }",
+            ])
+            .output()
+            .expect("list elasticsearch processes");
+        let text = String::from_utf8_lossy(&listing.stdout);
+        let mut commands = Vec::new();
+        for line in text.lines() {
+            let Some((pid, command)) = line.split_once('\t') else {
+                continue;
+            };
+            if command.is_empty() {
+                continue;
+            }
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", pid.trim(), "/T", "/F"])
+                .status();
+            if !commands.iter().any(|saved: &String| saved == command) {
+                commands.push(command.to_string());
+            }
+        }
+        let stopped = std::process::Command::new("docker")
+            .args(["stop", "-t", "30", "loci-search-postgres-1"])
+            .status()
+            .expect("docker stop");
+        assert!(stopped.success(), "failed to stop loci-search-postgres-1");
+        Paused { commands }
     }
 }

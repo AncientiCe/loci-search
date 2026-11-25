@@ -1,9 +1,12 @@
 pub mod bench;
+pub mod durable;
 pub mod elastic;
 pub mod embedding;
 pub mod fixture;
+pub mod generation;
 mod graph;
 pub mod index;
+pub mod palace;
 pub mod profile;
 pub mod ranking;
 mod regional;

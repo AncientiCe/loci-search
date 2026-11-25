@@ -1,0 +1,16 @@
+[package]
+name = "minilm-rc11"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Pinned ort 2.0.0-rc.11 MiniLM encoder. Loci's FastEmbed stack stays on rc.15."
+
+[[bin]]
+name = "minilm-rc11"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+ndarray = "0.17"
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["ndarray", "std", "download-binaries", "tls-native"] }
+unicode-normalization = "0.1"

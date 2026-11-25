@@ -56,6 +56,12 @@ pub(super) fn validate_settings(settings: &Value) -> Result<()> {
             kind(declaration)?;
         }
     }
+    if let Some(profile) = settings.get("retrieval_profile") {
+        ensure!(
+            profile.as_str() == Some("palace"),
+            "retrieval_profile must be palace"
+        );
+    }
     StreamPolicy::from_settings(settings)?;
     Ok(())
 }

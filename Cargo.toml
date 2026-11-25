@@ -48,6 +48,9 @@ rusqlite = { version = "0.43", default-features = false, features = ["bundled", 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "3.5", default-features = false, features = ["json", "rustls"] }
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
+jiff = "1"
+regex = "1"
 
 [features]
 default = ["local-model"]

@@ -259,6 +259,28 @@ enum Command {
         #[command(flatten)]
         settings: Settings,
     },
+    /// Publish committed PostgreSQL passages as one retrieval generation.
+    GenerationPublish {
+        #[arg(long)]
+        database_url: String,
+        /// PostgreSQL schema. One index uses one schema.
+        #[arg(long, default_value = "loci")]
+        schema: String,
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Query a published generation without opening PostgreSQL.
+    GenerationSearch {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        text: String,
+        /// Published generation directory id. Omit to read the newest generation.
+        #[arg(long)]
+        generation: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+    },
 }
 
 #[derive(Args)]
@@ -309,6 +331,26 @@ fn main() -> Result<()> {
             data,
             credentials,
         } => service::serve(bind, &data, credentials.as_deref())?,
+        Command::GenerationPublish {
+            database_url,
+            schema,
+            root,
+        } => {
+            let mut durable = loci_search::durable::Durable::open_schema(&database_url, &schema, &root)?;
+            print_json(&loci_search::generation::publish_live(&mut durable)?)?;
+        }
+        Command::GenerationSearch {
+            root,
+            text,
+            generation,
+            limit,
+        } => print_json(&loci_search::generation::search_text(
+            &root,
+            generation.as_deref(),
+            &text,
+            limit,
+            || {},
+        )?)?,
         Command::Import { index, url, files } => service::import(&url, &index, &files)?,
         Command::ModelInstall {
             model,

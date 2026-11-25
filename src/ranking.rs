@@ -7,7 +7,7 @@ use crate::{
     regional, terms,
     topology::Route,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::ValueEnum;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -197,7 +197,7 @@ pub struct Hit {
     pub routes: Vec<Route>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Candidate {
     lexical: Option<usize>,
     vector: Option<usize>,
@@ -415,6 +415,48 @@ fn search_with(
         })
         .map(|(id, _)| engine.ids[*id].clone())
         .collect();
+    if engine.manifest.retrieval_profile == Some(crate::index::RetrievalProfile::Palace)
+        && matches!(
+            strategy,
+            Strategy::Exact | Strategy::Global | Strategy::Regional
+        )
+    {
+        let scored_ids: Vec<usize> = if strategy == Strategy::Exact {
+            work.vector_comparisons = engine.ids.len();
+            (0..engine.ids.len()).collect()
+        } else {
+            fused.iter().map(|(id, _)| *id).collect()
+        };
+        let signals: HashMap<usize, Candidate> = fused.iter().copied().collect();
+        let candidate_ids = scored_ids
+            .iter()
+            .map(|id| engine.ids[*id].clone())
+            .collect();
+        let timer = Timer::start(&profile, "rerank");
+        let hits = palace_hits(
+            engine,
+            query,
+            vector,
+            strategy,
+            config,
+            &scored_ids,
+            &signals,
+            &graph_ranks,
+            &routes,
+            &expanded,
+            &mut work,
+        )?;
+        timer.finish(&mut profile);
+        return Ok(SearchResult {
+            strategy,
+            hits,
+            candidates: candidate_ids,
+            lexical_rescue_only_candidates,
+            expanded,
+            stop_reason,
+            work,
+        });
+    }
     let total_weight = weights.values().sum::<f64>().max(f64::EPSILON);
     let rerank = if strategy == Strategy::Regional {
         config.regional_rerank.unwrap_or_default()
@@ -486,4 +528,88 @@ fn search_with(
         stop_reason,
         work,
     })
+}
+
+fn palace_hits(
+    engine: &crate::index::Engine,
+    query: &Query,
+    vector: &[f32],
+    strategy: Strategy,
+    config: &SearchConfig,
+    scored_ids: &[usize],
+    signals: &HashMap<usize, Candidate>,
+    graph_ranks: &HashMap<usize, usize>,
+    routes: &regional::Routes,
+    expanded: &[Route],
+    work: &mut Work,
+) -> Result<Vec<Hit>> {
+    let stats = engine
+        .palace
+        .as_ref()
+        .context("palace profile is missing corpus document frequencies")?;
+    let owned: Vec<(usize, crate::index::Source)> = scored_ids
+        .iter()
+        .map(|id| Ok((*id, engine.source(*id)?)))
+        .collect::<Result<_>>()?;
+    let views: Vec<crate::palace::Passage<'_>> = owned
+        .iter()
+        .map(|(id, source)| crate::palace::Passage {
+            id: &source.id,
+            source: &source.document,
+            text: &source.text,
+            room: metadata_str(&source.metadata, "room"),
+            created_at: metadata_str(&source.metadata, "created_at"),
+            filed_at: metadata_str(&source.metadata, "filed_at"),
+            cosine: f64::from(cosine(vector, &engine.vectors[*id])),
+            doc_len: stats.doc_len[*id] as usize,
+        })
+        .collect();
+    work.rerank_vector_comparisons += views.len();
+    let corpus = crate::palace::Corpus {
+        documents: stats.documents,
+        average_length: stats.average_length,
+        document_frequency: stats.document_frequency.clone(),
+    };
+    let ranked = crate::palace::score(
+        &query.text,
+        &views,
+        &corpus,
+        jiff::Timestamp::now(),
+        &crate::palace::Weights::default(),
+        &HashSet::new(),
+    );
+    drop(views);
+    let ids: Vec<usize> = owned.iter().map(|(id, _)| *id).collect();
+    let mut sources: Vec<Option<crate::index::Source>> =
+        owned.into_iter().map(|(_, source)| Some(source)).collect();
+    let mut hits = Vec::new();
+    for row in ranked.into_iter().take(config.limit) {
+        let id = ids[row.index];
+        let source = sources[row.index]
+            .take()
+            .context("palace hit taken twice")?;
+        let signal = signals.get(&id).copied().unwrap_or_default();
+        let global_lexical_rank = if strategy == Strategy::Regional {
+            signal.rescue
+        } else {
+            signal.lexical
+        };
+        hits.push(Hit {
+            source,
+            score: row.combined,
+            lexical_rank: signal.lexical,
+            vector_rank: signal.vector,
+            global_lexical_rank,
+            graph_rank: graph_ranks.get(&id).copied(),
+            routes: routes.for_hit(engine, id, expanded),
+        });
+    }
+    Ok(hits)
+}
+
+fn metadata_str<'a>(metadata: &'a BTreeMap<String, serde_json::Value>, key: &str) -> &'a str {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
 }

@@ -204,20 +204,35 @@ pub fn pruning_dev(
         .map(|(row, id)| (id.as_str(), row))
         .collect::<HashMap<_, _>>();
     let mut regional = Vec::new();
-    let plans = if ablate {
+    let mut plans = if ablate {
         ablations(&frozen, corpus)
+            .into_iter()
+            .map(|(name, config)| (name, Strategy::Regional, config))
+            .collect()
     } else {
         Vec::new()
     };
-    for (name, config) in plans {
+    if ablate {
+        // The frozen no-region setting as a real hybrid search, beside its regional twin.
+        let mut hybrid = frozen.clone();
+        hybrid.graph_candidates = Some(150);
+        hybrid.graph_width = 128;
+        hybrid.rescue = 60;
+        plans.push((
+            "hybrid_graph_150_width_128_rescue_60".into(),
+            Strategy::Hybrid,
+            hybrid,
+        ));
+    }
+    for (name, strategy, config) in plans {
         config.validate()?;
         for query in queries.iter().take(WARMUP) {
-            engine.search_prepared(query, Strategy::Regional, &config)?;
+            engine.search_prepared(query, strategy, &config)?;
         }
         let mut outcomes = Vec::with_capacity(queries.len());
         for query in queries {
             let started = Instant::now();
-            let result = engine.search_prepared(query, Strategy::Regional, &config)?;
+            let result = engine.search_prepared(query, strategy, &config)?;
             let elapsed_ms = milliseconds(started);
             let work = &result.work;
             outcomes.push(Outcome {

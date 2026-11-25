@@ -68,6 +68,8 @@ pub struct Report {
     exact_reference: Vec<Reference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     throughput: Option<Vec<ThroughputRow>>,
+    /// How the benchmark reached regional search: `in_process` or `http`.
+    regional_transport: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,6 +180,8 @@ pub struct Run {
     /// Concurrent worker counts timed after the one-query passes.
     pub throughput_widths: Vec<usize>,
     pub throughput_encoder: Option<ThroughputEncoder>,
+    /// Send regional searches to `loci bench-serve` over loopback HTTP instead of in-process.
+    pub remote: Option<crate::remote::Client>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -309,8 +313,14 @@ impl Plan {
         &self,
         engine: &mut Engine,
         client: Option<&elastic::Client>,
+        remote: Option<&crate::remote::Client>,
         query: &Query,
     ) -> Result<SearchResult> {
+        if self.strategy == Strategy::Regional
+            && let Some(remote) = remote
+        {
+            return remote.search(engine, query);
+        }
         if let Some(options) = self.elastic {
             return client.expect("configured Elasticsearch").search(
                 engine,
@@ -613,7 +623,7 @@ fn evaluate_with(
         for plan in &settings {
             let (prepared, _) =
                 prepared_query(query, &engine.manifest.embedding, embed.as_deref_mut())?;
-            plan.search(engine, client, &prepared)?;
+            plan.search(engine, client, run.remote.as_ref(), &prepared)?;
         }
     }
     let mut samples = BTreeMap::<(usize, Option<&str>), Vec<Sample>>::new();
@@ -626,7 +636,8 @@ fn evaluate_with(
                 let (prepared, embed_ms) =
                     prepared_query(query, &engine.manifest.embedding, embed.as_deref_mut())?;
                 let started = Instant::now();
-                let result = settings[index].search(engine, client, &prepared)?;
+                let result =
+                    settings[index].search(engine, client, run.remote.as_ref(), &prepared)?;
                 let elapsed_ms = milliseconds(started) + embed_ms.unwrap_or(0.0);
                 if let Some(ms) = embed_ms {
                     embed_times.push(ms);
@@ -821,6 +832,11 @@ fn evaluate_with(
         regional_or_rescue_scoring,
         exact_reference,
         throughput,
+        regional_transport: if run.remote.is_some() {
+            "http"
+        } else {
+            "in_process"
+        },
     })
 }
 
@@ -936,11 +952,16 @@ fn measure_throughput(
                                     Some(options) => client
                                         .expect("configured Elasticsearch")
                                         .search(engine, query, &plan.config, options)?,
-                                    None => engine.search_prepared(
-                                        query,
-                                        plan.strategy,
-                                        &plan.config,
-                                    )?,
+                                    None => match run.remote.as_ref() {
+                                        Some(remote) if plan.strategy == Strategy::Regional => {
+                                            remote.search(engine, query)?
+                                        }
+                                        _ => engine.search_prepared(
+                                            query,
+                                            plan.strategy,
+                                            &plan.config,
+                                        )?,
+                                    },
                                 };
                                 times.push(milliseconds(began));
                             }
@@ -1079,7 +1100,7 @@ fn tune(
             let mut ndcg = 0.0;
             let mut recall = 0.0;
             for &query in &queries {
-                let result = plan.search(engine, Some(dev.elasticsearch), query)?;
+                let result = plan.search(engine, Some(dev.elasticsearch), None, query)?;
                 let ranked = result
                     .hits
                     .iter()
@@ -1327,6 +1348,7 @@ mod tests {
             open_ms: 0.0,
             throughput_widths: Vec::new(),
             throughput_encoder: None,
+            remote: None,
         };
         let vectors = queries
             .iter()

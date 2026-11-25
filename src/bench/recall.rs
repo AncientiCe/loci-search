@@ -282,8 +282,8 @@ fn diagnose(
 ) -> Result<Diagnosis> {
     engine.prepare_regional()?;
     for query in queries {
-        regional.search(engine, Some(client), query)?;
-        elasticsearch.search(engine, Some(client), query)?;
+        regional.search(engine, Some(client), None, query)?;
+        elasticsearch.search(engine, Some(client), None, query)?;
     }
     let mut regional_metrics = Measurements::default();
     let mut elastic_metrics = Measurements::default();
@@ -293,7 +293,7 @@ fn diagnose(
     for (i, query) in queries.iter().enumerate() {
         let mut measure = |plan: &Plan, measurements: &mut Measurements| -> Result<SearchResult> {
             let start = Instant::now();
-            let result = plan.search(engine, Some(client), query)?;
+            let result = plan.search(engine, Some(client), None, query)?;
             measurements.add(query, &result, milliseconds(start))?;
             Ok(result)
         };
@@ -387,7 +387,7 @@ pub fn tune_regional_rerank(
             let mut measurements = Measurements::default();
             for query in queries {
                 let start = Instant::now();
-                let result = plan.search(engine, Some(client), query)?;
+                let result = plan.search(engine, Some(client), None, query)?;
                 measurements.add(query, &result, milliseconds(start))?;
             }
             let metrics = measurements.finish();

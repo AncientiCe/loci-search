@@ -122,6 +122,15 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Hold one prepared engine with a frozen regional plan and answer `POST /search` over HTTP.
+    BenchServe {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        frozen_report: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:7711")]
+        bind: String,
+    },
     /// Measure how much of the corpus each configuration scores against an exhaustive top 100.
     PruningDev {
         #[arg(long)]
@@ -320,6 +329,9 @@ enum Command {
         elastic_url: Option<String>,
         #[arg(long, requires = "elastic_url")]
         elastic_index: Option<String>,
+        /// Send regional searches to `loci bench-serve` at this loopback URL.
+        #[arg(long, requires = "frozen_report")]
+        loci_url: Option<String>,
         #[command(flatten)]
         settings: Settings,
     },
@@ -499,6 +511,16 @@ fn main() -> Result<()> {
                 &elastic_candidates,
             )?;
             write_json(&out, &report)?;
+        }
+        Command::BenchServe {
+            db,
+            frozen_report,
+            bind,
+        } => {
+            let engine = Engine::open(&db)?;
+            let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            let config = frozen.regional_config(&engine)?.clone();
+            loci_search::remote::serve(engine, config, &bind)?;
         }
         Command::PruningDev {
             db,
@@ -698,6 +720,7 @@ fn main() -> Result<()> {
             graph_candidates,
             elastic_url,
             elastic_index,
+            loci_url,
             settings,
         } => {
             let config = settings.into();
@@ -734,6 +757,10 @@ fn main() -> Result<()> {
                     Some(BenchEmbed::MiniLm) => Some(bench::ThroughputEncoder::MiniLm),
                     None => None,
                 },
+                remote: loci_url
+                    .as_deref()
+                    .map(loci_search::remote::Client::new)
+                    .transpose()?,
             };
             eprintln!(
                 "Loaded {} chunks and {} evaluation queries",

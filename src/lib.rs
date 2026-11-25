@@ -10,6 +10,7 @@ pub mod palace;
 pub mod profile;
 pub mod ranking;
 mod regional;
+pub mod remote;
 pub mod store;
 mod topology;
 

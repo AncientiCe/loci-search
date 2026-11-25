@@ -37,6 +37,32 @@ The earlier FiQA result, 8.67 percentage points of Recall@100 above Elasticsearc
 
 With the same embeddings and reranker, Loci matches Elasticsearch on recall and top-10 quality and does not beat it on latency or throughput. The cosine-heavy reranker over fused BM25 and kNN candidates helped both engines.
 
+## Regions off: graph, rescue, and reranker only
+
+The pruning experiment below showed that the regional scan costs time without adding recall. With regions switched off (one region, one chunk, one posting), Loci searches only the persisted HNSW graph (150 candidates, width 128), bounded global rescue (60 hits), and the 8% coverage, 92% cosine reranker. Those settings were chosen on the 250 development queries by a rule fixed before the run: the fastest p95 within 0.2 percentage points of the best Recall@100.
+
+The held-out run repeated the E1 setup on Linux: both engines in one Docker Desktop VM with 16 CPUs and 16 GiB, the same one million HotpotQA passages and `bge-small-en-v1.5` vectors, 320 held-out queries with three passes each, and Elasticsearch 8.19.25 with its English analyzer, 256 kNN candidates, a 4 GiB heap, and Loci's reranker. Both engines read reranker coverage from Loci's in-memory postings.
+
+| Track | Engine | Recall@100 | nDCG@10 | p50 | p95 | p99 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Raw text, query encoding included | Loci | 90.78% | 0.8219 | 17.13 ms | 25.71 ms | 30.74 ms |
+| Raw text, query encoding included | Elasticsearch | 90.63% | 0.8225 | 24.18 ms | 34.54 ms | 40.82 ms |
+| Precomputed vectors | Loci | 90.78% | 0.8219 | 5.83 ms | 11.82 ms | 14.92 ms |
+| Precomputed vectors | Elasticsearch | 90.63% | 0.8225 | 13.49 ms | 20.69 ms | 24.81 ms |
+
+Loci minus Elasticsearch: nDCG@10 −0.0006 (95% interval −0.0042 to +0.0025), Recall@100 +0.16 points (−0.63 to +0.94). Query encoding took 9.3 ms at p50.
+
+Queries per second with concurrent clients:
+
+| Clients | Loci, raw text | Elasticsearch, raw text | Loci, vectors | Elasticsearch, vectors |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 49.5 | 35.5 | 158.3 | 70.4 |
+| 4 | 181.7 | 132.6 | 597.5 | 267.9 |
+| 8 | 319.7 | 198.8 | 1,060.3 | 453.4 |
+| 16 | 374.7 | 234.9 | 1,656.4 | 548.4 |
+
+At equal quality, Loci's raw-text p95 is 25.6% lower than Elasticsearch's, which meets the 20% target, and Loci serves more queries per second at every concurrency. Loci ran in-process in the benchmark, while Elasticsearch answered over loopback HTTP, so part of the gap is the HTTP and JSON round trip a client of either server would pay. A server-to-server comparison through `loci serve` has not run yet. This is one corpus.
+
 ## Can the topology rule regions out?
 
 `loci pruning-dev` scores all one million HotpotQA passages with the regional reranker (92% cosine, 8% term coverage) and compares each plan's top 100 with that exhaustive top 100. The 250 development queries used precomputed vectors on Windows, so the timings compare rows only.

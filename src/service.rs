@@ -14,6 +14,7 @@ use clap::ValueEnum;
 pub use files::{backup, import, restore};
 use loci_search::embedding::ModelPack;
 use loci_search::generation::{self, TextChange, TextUpdate};
+use loci_search::ranking::Strategy;
 use loci_search::store::{Catalog, Mutation, SearchRequest};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -431,7 +432,7 @@ async fn search(
             None => s.catalog.snapshot(&name)?,
         };
         let settings = snap.settings()?;
-        let semantic = mode.as_deref() == Some("regional")
+        let semantic = matches!(mode.as_deref(), Some("regional" | "hybrid"))
             || (mode.is_none()
                 && settings
                     .get("model")
@@ -442,8 +443,15 @@ async fn search(
                     .keys()
                     .all(|k| matches!(k.as_str(), "text" | "limit" | "filter" | "budget")));
         let result = if semantic {
+            // Hybrid is the default; a request that sends a regional `budget` keeps regional search.
+            let strategy = match mode.as_deref() {
+                Some("regional") => Strategy::Regional,
+                Some(_) => Strategy::Hybrid,
+                None if obj.contains_key("budget") => Strategy::Regional,
+                None => Strategy::Hybrid,
+            };
             s.semantic
-                .search(&name, &snap, &settings, body, &principals)?
+                .search(&name, &snap, &settings, body, &principals, strategy)?
         } else {
             ensure!(
                 mode.is_none() || mode.as_deref() == Some("exact"),
@@ -619,6 +627,127 @@ mod tests {
             Err(ureq::Error::StatusCode(status)) => status,
             Err(error) => panic!("{error}"),
         }
+    }
+
+    fn copy_dir(from: &FsPath, to: &FsPath) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn text_search_on_a_model_index_defaults_to_hybrid() {
+        // Opt-in: point LOCI_MODEL_CACHE at a models directory with bge-small-en-v1.5.
+        let Ok(models) = std::env::var("LOCI_MODEL_CACHE") else {
+            eprintln!("skipped: set LOCI_MODEL_CACHE to a models directory with bge-small-en-v1.5");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_path_buf();
+        copy_dir(FsPath::new(&models), &data.join("models"));
+        let (sender, receiver) = mpsc::channel();
+        let data_for_server = data.clone();
+        std::thread::spawn(move || {
+            listen(
+                "127.0.0.1:0".parse().unwrap(),
+                &data_for_server,
+                None,
+                Some(sender),
+            )
+            .unwrap();
+        });
+        let addr = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        let base = format!("http://{addr}");
+        let agent = ureq::Agent::new_with_defaults();
+        assert_eq!(
+            code(
+                agent
+                    .put(format!("{base}/v1/indexes/manuals"))
+                    .send_json(json!({"model": "bge-small-en-v1.5"}))
+            ),
+            200
+        );
+        let documents = [
+            (
+                "vault",
+                "The encrypted vault rotates its master key every ninety days.",
+            ),
+            (
+                "lamp",
+                "Lamp LMP-201 ships with a warm white bulb and a fabric shade.",
+            ),
+            (
+                "router",
+                "Reset the router by holding the recessed button for ten seconds.",
+            ),
+            (
+                "invoice",
+                "Invoices are payable within thirty days of the billing date.",
+            ),
+            (
+                "garden",
+                "Water tomato seedlings in the morning and keep the soil moist.",
+            ),
+        ];
+        let operations = documents
+            .iter()
+            .map(|(id, text)| json!({"op":"upsert","document":{"id":id,"revision":"1","text":text,"fields":{}}}))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            code(
+                agent
+                    .post(format!("{base}/v1/indexes/manuals/bulk"))
+                    .send_json(json!({ "operations": operations }))
+            ),
+            200
+        );
+        let search = |body: Value| {
+            agent
+                .post(format!("{base}/v1/indexes/manuals/search"))
+                .send_json(body)
+        };
+        let page: Value = search(json!({"text": "how often is the vault key rotated", "limit": 3}))
+            .unwrap()
+            .body_mut()
+            .read_json()
+            .unwrap();
+        assert_eq!(page["strategy"], "hybrid");
+        assert_eq!(page["hits"][0]["document"], "vault");
+        let identifier: Value = search(json!({"text": "LMP-201", "limit": 1}))
+            .unwrap()
+            .body_mut()
+            .read_json()
+            .unwrap();
+        assert_eq!(identifier["hits"][0]["document"], "lamp");
+        let regional: Value =
+            search(json!({"text": "router reset", "limit": 2, "mode": "regional"}))
+                .unwrap()
+                .body_mut()
+                .read_json()
+                .unwrap();
+        assert_eq!(regional["strategy"], "regional");
+        assert_eq!(regional["hits"][0]["document"], "router");
+        // A budget without a mode keeps regional search for existing callers.
+        let budgeted: Value =
+            search(json!({"text": "router reset", "limit": 2, "budget": {"regions": 4}}))
+                .unwrap()
+                .body_mut()
+                .read_json()
+                .unwrap();
+        assert_eq!(budgeted["strategy"], "regional");
+        assert_eq!(
+            code(search(
+                json!({"text": "router", "mode": "hybrid", "budget": {"regions": 4}})
+            )),
+            400
+        );
     }
 
     #[test]

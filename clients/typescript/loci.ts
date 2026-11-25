@@ -98,7 +98,7 @@ export class Loci {
   }
 
   search(name: string, query: Record<string, Json> & { mode: "exact" }): Promise<ExactPage>;
-  search(name: string, query: Record<string, Json> & { mode: "regional" }): Promise<RegionalPage>;
+  search(name: string, query: Record<string, Json> & { mode: "hybrid" | "regional" }): Promise<RegionalPage>;
   search(name: string, query: Record<string, Json>): Promise<ExactPage | RegionalPage>;
   search(name: string, query: Record<string, Json>): Promise<ExactPage | RegionalPage> {
     return this.request("POST", this.index(name) + "/search", query);

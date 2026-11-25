@@ -139,7 +139,9 @@
             "type": "string"
           },
           "mode": {
+            "description": "Text search on a model index defaults to hybrid: global keyword search, the HNSW graph, and the reranker. Regional search runs the semantic regions with an optional budget, and a request that sends a budget without a mode stays regional. Exact runs filtered, sorted, and faceted catalog search.",
             "enum": [
+              "hybrid",
               "regional",
               "exact"
             ]
@@ -179,6 +181,7 @@
             "type": "object"
           },
           "budget": {
+            "description": "Regional work budget. Only regional search accepts it.",
             "type": "object",
             "properties": {
               "passages": {

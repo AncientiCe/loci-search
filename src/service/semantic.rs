@@ -34,7 +34,7 @@ struct Request {
     #[serde(default)]
     filter: Option<Filter>,
     #[serde(default)]
-    budget: Budget,
+    budget: Option<Budget>,
 }
 fn default_limit() -> usize {
     10
@@ -189,19 +189,25 @@ impl RegionalService {
         settings: &Value,
         body: Value,
         principals: &[String],
+        strategy: Strategy,
     ) -> Result<Value> {
         let req: Request = serde_json::from_value(body)?;
+        ensure!(
+            strategy == Strategy::Regional || req.budget.is_none(),
+            "budget applies to regional search; send \"mode\": \"regional\" with it"
+        );
+        let budget = req.budget.unwrap_or_default();
         ensure!(
             !req.text.trim().is_empty() && req.text.len() <= 16_384,
             "text must contain 1–16384 bytes"
         );
         ensure!(
             (1..=200).contains(&req.limit),
-            "regional limit must be 1–200"
+            "semantic search limit must be 1–200"
         );
-        let count = req.budget.passages.unwrap_or(6000);
-        let regions = req.budget.regions.unwrap_or(12);
-        let postings = req.budget.postings.unwrap_or(60_000);
+        let count = budget.passages.unwrap_or(6000);
+        let regions = budget.regions.unwrap_or(12);
+        let postings = budget.postings.unwrap_or(60_000);
         ensure!(
             (2..=12000).contains(&count)
                 && (1..=64).contains(&regions)
@@ -211,7 +217,7 @@ impl RegionalService {
         let model = settings
             .get("model")
             .and_then(Value::as_str)
-            .context("regional search needs an index with a local model")?;
+            .context("semantic search needs an index with a local model")?;
         let pack = ModelPack::from_str(model, false).map_err(anyhow::Error::msg)?;
         // The topology itself contains landmark IDs. Build only from eligible documents so
         // a route, candidate ID, or explanation cannot disclose a different reader's data.
@@ -260,24 +266,27 @@ impl RegionalService {
             judgments: BTreeMap::new(),
             required: vec![],
         };
-        let rescue = (count / 4).clamp(1, 40);
-        let config = SearchConfig {
-            limit: req.limit,
-            depth: req.limit.max(40),
-            max_regions: regions,
-            max_chunks: count - rescue,
-            max_postings: postings,
-            rescue,
-            rescue_max_scored: Some(rescue),
-            ..Default::default()
+        let config = if strategy == Strategy::Regional {
+            let rescue = (count / 4).clamp(1, 40);
+            SearchConfig {
+                limit: req.limit,
+                depth: req.limit.max(40),
+                max_regions: regions,
+                max_chunks: count - rescue,
+                max_postings: postings,
+                rescue,
+                rescue_max_scored: Some(rescue),
+                ..Default::default()
+            }
+        } else {
+            SearchConfig::hybrid(req.limit)
         };
         let idle = lock(&projection.readers)?.pop();
         let mut engine = match idle {
             Some(e) => e,
             None => Engine::open(&projection.db)?,
         };
-        let mut response =
-            serde_json::to_value(engine.search(&query, Strategy::Regional, &config)?)?;
+        let mut response = serde_json::to_value(engine.search(&query, strategy, &config)?)?;
         let mut pool = lock(&projection.readers)?;
         if pool.len() < 2 {
             pool.push(engine);

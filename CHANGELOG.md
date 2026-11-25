@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `Strategy::Hybrid` searches with the bounded global rescue, the persisted HNSW graph, and the reranker, without the regional scan. It loads a lean index without per-region posting lists, int8 vectors, or scan scratch; a later regional search upgrades it. On one million HotpotQA passages a hybrid `bench-serve` was ready in 12.1 s at 2.49 GB, against 24.8 s and 4.51 GB for regional search with budgets of 1, at identical quality. Over HTTP on Linux, with no paging, its raw-text p95 was 25.35 ms against Elasticsearch's 33.78 ms (−25%), and 13.00 ms against 20.31 ms with precomputed vectors. On FiQA's 648 test queries, with Cohere vectors, it reached 74.00% Recall@100 and 0.425 nDCG@10 against Elasticsearch's 74.21% and 0.426, at 4.20 ms p95 against 15.06 ms, and served 2,577 queries per second at 16 clients against 473.
+- `loci serve` runs hybrid search by default for text search on a model index, with the settings chosen on HotpotQA and FiQA (`SearchConfig::hybrid`). `"mode": "regional"` keeps regional search and its `budget`; a request that sends a `budget` without a mode stays regional, and hybrid search rejects a budget. Responses report `"strategy": "hybrid"`.
 - `loci pruning-dev` sweeps the graph, width, and rescue grid as hybrid search and prepares the graph when the frozen plan has none.
 
 ## [0.3.0]

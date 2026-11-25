@@ -2,8 +2,13 @@
 
 ## Unreleased
 
+## [0.4.2]
+
+Hybrid search answers long questions as fast as short ones. Its keyword search now reads only the 8 rarest terms of a question, which was where long questions spent most of their time. Against Elasticsearch 8.19 on Linux, with both engines over HTTP and the same reranker, quality stayed a statistical tie and the p95 lead grew to 44% on HotpotQA 1M with raw text, 66% with precomputed vectors, and 75% on FiQA. See the [benchmark results](https://github.com/AncientiCe/loci-search/blob/main/benchmarks/benchmark.md).
+
 - Hybrid search runs its keyword rescue on the 8 query terms found in the fewest passages (`SearchConfig.rescue_max_terms`); reranker coverage still uses every term. Long questions had set the latency tail. On Linux, with both engines over HTTP and the same reranker, HotpotQA 1M raw-text p95 fell to 19.18 ms against Elasticsearch's 34.33 ms (−44%), precomputed-vector p95 to 6.89 ms against 20.36 ms, and FiQA p95 to 3.91 ms against 15.67 ms, with Recall@100 91.09% against 90.63% on HotpotQA and 74.00% against 74.21% on FiQA.
 - `loci profile` profiles hybrid search, times IDF lookups separately, and reports each phase by query length.
+
 ## [0.4.1]
 
 Hybrid search ranks exact identifiers first again. Queries such as `LMP-201` or `ERR_CONNECTION_RESET` now rerank on their keyword match, while questions keep the reranker that tied Elasticsearch. With this release's `loci serve` settings on both engines, FiQA held out the same result: tied quality, 4.73 ms p95 against Elasticsearch's 17.02 ms, and 5.8 times the queries per second at 16 clients. HotpotQA results are unchanged. See the [benchmark results](https://github.com/AncientiCe/loci-search/blob/main/benchmarks/benchmark.md).

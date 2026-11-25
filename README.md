@@ -7,7 +7,7 @@
 [![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: research preview](https://img.shields.io/badge/status-research%20preview-lightgrey.svg)
 
-![Loci Search: self-hosted hybrid search in Rust. Against Elasticsearch 8.19, retrieval quality is tied, p95 latency is 25% lower on HotpotQA 1M and 72% lower on FiQA, and throughput is 5.4 times higher on FiQA at 16 clients.](docs/images/hero.svg)
+![Loci Search: self-hosted hybrid search in Rust. Against Elasticsearch 8.19, retrieval quality is tied, p95 latency is 25% lower on HotpotQA 1M and 72% lower on FiQA, and throughput is 5.8 times higher on FiQA at 16 clients.](docs/images/hero.svg)
 
 Loci Search is a self-hosted search engine and Rust library. It keeps documents in SQLite, searches them with a keyword index and a vector graph, and returns each hit with its document, revision, and source span. On two public retrieval benchmarks it finds the same results as Elasticsearch and answers faster.
 
@@ -17,16 +17,16 @@ Loci Search is a self-hosted search engine and Rust library. It keeps documents 
 
 Both engines ran on the same Linux machine, answered over HTTP, used identical vectors and the same reranker, and were measured on held-out queries after their settings were frozen on development queries.
 
-![p95 latency at equal quality. HotpotQA 1M raw text: Loci 25.4 ms, Elasticsearch 33.8 ms. HotpotQA 1M precomputed vectors: Loci 13.0 ms, Elasticsearch 20.3 ms. FiQA: Loci 4.2 ms, Elasticsearch 15.1 ms.](docs/images/latency.svg)
+![p95 latency at equal quality. HotpotQA 1M raw text: Loci 25.4 ms, Elasticsearch 33.8 ms. HotpotQA 1M precomputed vectors: Loci 13.0 ms, Elasticsearch 20.3 ms. FiQA: Loci 4.7 ms, Elasticsearch 17.0 ms.](docs/images/latency.svg)
 
 ![Recall@100 and nDCG@10 for Loci and Elasticsearch on HotpotQA 1M and FiQA. Every difference is within its 95% interval of zero.](docs/images/quality.svg)
 
-![Queries per second at 1, 4, 8, and 16 concurrent clients. HotpotQA 1M raw text: Loci 377, Elasticsearch 260 at 16 clients. FiQA: Loci 2,577, Elasticsearch 473 at 16 clients.](docs/images/throughput.svg)
+![Queries per second at 1, 4, 8, and 16 concurrent clients. HotpotQA 1M raw text: Loci 377, Elasticsearch 260 at 16 clients. FiQA: Loci 2,727, Elasticsearch 473 at 16 clients.](docs/images/throughput.svg)
 
 | Corpus | Recall@100, Loci / Elasticsearch | nDCG@10, Loci / Elasticsearch | p95 latency, Loci / Elasticsearch | Queries per second at 16 clients |
 | --- | --- | --- | --- | --- |
 | HotpotQA, 1M passages, raw text | 90.78% / 90.63% | 0.822 / 0.823 | 25.4 / 33.8 ms | 377 / 260 |
-| FiQA, 57,638 passages, precomputed vectors | 74.00% / 74.21% | 0.425 / 0.426 | 4.2 / 15.1 ms | 2,577 / 473 |
+| FiQA, 57,638 passages, precomputed vectors | 74.00% / 74.21% | 0.424 / 0.425 | 4.7 / 17.0 ms | 2,727 / 473 |
 
 No quality difference is statistically significant. The [benchmark results](benchmarks/benchmark.md) list the setup, paired confidence intervals, every concurrency level, and the commands to reproduce them.
 
@@ -39,7 +39,7 @@ Hybrid search, the default for text search in `loci serve`, builds two global ca
 1. **Keyword search.** BM25 over in-memory postings, pruned with MaxScore, returns the best 60 passages.
 2. **Vector search.** An HNSW graph saved beside the index returns the 150 nearest passages.
 3. **Fusion.** Reciprocal rank fusion keeps 200 candidates and reserves slots for keyword hits.
-4. **Reranking.** Each candidate is scored 92% on cosine similarity and 8% on the IDF-weighted share of query terms it contains.
+4. **Reranking.** Each candidate is scored 92% on cosine similarity and 8% on the IDF-weighted share of query terms it contains. A query that looks like an identifier, such as `LMP-201` or `ERR_CONNECTION_RESET`, is scored 65% on term coverage instead, so an exact code still ranks first when its embedding is poor.
 
 The settings were chosen on HotpotQA and FiQA development queries by a rule fixed before measuring: the fastest p95 within 0.2 points of the best Recall@100. The whole path runs in one process with no external services, which is where the latency and throughput lead comes from.
 
@@ -158,7 +158,7 @@ cargo run --locked --release -- bench --db runs/example.sqlite --queries runs/ex
 Loci is a single-node research preview, and its formats and APIs may change before 1.0.
 
 - The comparison with Elasticsearch covers two corpora on one machine. It measures retrieval only, not indexing speed or features that Loci does not have.
-- Hybrid search weights cosine similarity at 92%. An exact identifier that the embedding model does not represent well can rank below passages that are semantically close. Exact search (`"mode": "exact"`) and regional search weigh keyword matches more heavily.
+- Hybrid search recognises identifiers by their shape: at most four words, one of them a code with letters and digits, an underscore name, or a number of three or more digits. A code that does not fit that shape, such as a plain product name inside a long question, is ranked mostly by its embedding. Exact search (`"mode": "exact"`) matches keywords literally.
 - There is no replication or sharding. One process serves one data directory.
 - The CLI `ingest` command replaces a whole retrieval snapshot. The HTTP service applies incremental writes.
 

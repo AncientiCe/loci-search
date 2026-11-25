@@ -1,14 +1,14 @@
 # Benchmark results
 
-Loci Search 0.4.0 returns the same retrieval quality as Elasticsearch 8.19 and answers faster. On two public corpora, with both engines answering over HTTP on the same Linux machine, Recall@100 and nDCG@10 were statistically tied, Loci's p95 latency was 25% to 72% lower, and Loci served 1.45 to 5.4 times as many queries per second.
+Loci Search 0.4.0 returns the same retrieval quality as Elasticsearch 8.19 and answers faster. On two public corpora, with both engines answering over HTTP on the same Linux machine, Recall@100 and nDCG@10 were statistically tied, Loci's p95 latency was 25% to 72% lower, and Loci served 1.45 to 5.8 times as many queries per second.
 
 This page lists only the current results. Earlier configurations, including the runs where Loci lost or tied, are in the [benchmark history](benchmark_history.md).
 
-![p95 latency at equal quality. HotpotQA 1M raw text: Loci 25.4 ms, Elasticsearch 33.8 ms. HotpotQA 1M precomputed vectors: Loci 13.0 ms, Elasticsearch 20.3 ms. FiQA: Loci 4.2 ms, Elasticsearch 15.1 ms.](../docs/images/latency.svg)
+![p95 latency at equal quality. HotpotQA 1M raw text: Loci 25.4 ms, Elasticsearch 33.8 ms. HotpotQA 1M precomputed vectors: Loci 13.0 ms, Elasticsearch 20.3 ms. FiQA: Loci 4.7 ms, Elasticsearch 17.0 ms.](../docs/images/latency.svg)
 
 ![Recall@100 and nDCG@10 for Loci and Elasticsearch on HotpotQA 1M and FiQA. Every difference is within its 95% interval of zero.](../docs/images/quality.svg)
 
-![Queries per second at 1, 4, 8, and 16 concurrent clients. HotpotQA 1M raw text: Loci 377, Elasticsearch 260 at 16 clients. FiQA: Loci 2,577, Elasticsearch 473 at 16 clients.](../docs/images/throughput.svg)
+![Queries per second at 1, 4, 8, and 16 concurrent clients. HotpotQA 1M raw text: Loci 377, Elasticsearch 260 at 16 clients. FiQA: Loci 2,727, Elasticsearch 473 at 16 clients.](../docs/images/throughput.svg)
 
 ## How the comparison was run
 
@@ -19,13 +19,15 @@ This page lists only the current results. Earlier configurations, including the 
 | Loci | 0.4.0 hybrid search: bounded global keyword search, the persisted HNSW graph, and the reranker. No regional scan. |
 | Elasticsearch | 8.19.25, one shard, English analyzer, kNN with 256 candidates, a 4 GiB heap locked in memory with `bootstrap.memory_lock`. |
 | Embeddings | Identical vectors in both engines: `bge-small-en-v1.5` for HotpotQA, Cohere English v3 for FiQA. |
-| Reranking | The same reranker on both engines' candidates: 92% cosine similarity, 8% IDF-weighted term coverage. Quality differences therefore come from candidate generation. |
+| Reranking | The same reranker on both engines' candidates: 92% cosine similarity and 8% IDF-weighted term coverage, or 65% coverage, 25% cosine, and 10% rank fusion for identifier-like queries such as `LMP-201`. Quality differences therefore come from candidate generation. |
 | Queries | Held-out queries only, three passes each. Settings were chosen on separate development queries and frozen before the held-out run. |
 | Paging | Swap counters were read before and after each run. Neither run swapped memory back in. |
 
 ### How the Loci settings were chosen
 
 On the development queries of each corpus, Loci swept 150, 200, and 300 graph candidates, graph widths of 128 and 256, and 40 or 60 keyword hits. A rule fixed before the run picked the fastest p95 within 0.2 points of the best development Recall@100. Both corpora chose 150 graph candidates at width 128; HotpotQA chose 60 keyword hits and FiQA 40. `loci serve` uses 150, 128, and 60 (`SearchConfig::hybrid`).
+
+Queries that look like identifiers (at most four words, one of them a code such as `LMP-201`, `ERR_CONNECTION_RESET`, or a number of three or more digits) rerank with keyword-heavy weights, so an exact code still ranks first when its embedding is poor. No HotpotQA query matches that rule, so the HotpotQA results are unchanged by it. One FiQA test query matches (`Tax: 1099 paper form`), and the FiQA results below were measured with the rule on both engines.
 
 ## HotpotQA, one million passages
 
@@ -53,17 +55,17 @@ Loci minus Elasticsearch, paired by query: nDCG@10 −0.0006 (95% interval −0.
 
 | Engine | Candidate recall | Recall@100 | nDCG@10 | p50 | p95 | p99 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Loci | 79.07% | 74.00% | 0.4252 | 3.36 ms | 4.20 ms | 4.59 ms |
-| Elasticsearch | 77.77% | 74.21% | 0.4261 | 13.99 ms | 15.06 ms | 16.89 ms |
+| Loci | 79.07% | 74.00% | 0.4242 | 3.67 ms | 4.73 ms | 5.30 ms |
+| Elasticsearch | 77.77% | 74.21% | 0.4253 | 14.53 ms | 17.02 ms | 20.39 ms |
 
-Loci minus Elasticsearch, paired by query: nDCG@10 −0.0009 (95% interval −0.0046 to +0.0018), Recall@100 −0.21 points (−0.84 to +0.42).
+Loci minus Elasticsearch, paired by query: nDCG@10 −0.0011 (95% interval −0.0049 to +0.0014), Recall@100 −0.21 points (−0.84 to +0.42).
 
 | Concurrent clients | Loci | Elasticsearch |
 | ---: | ---: | ---: |
-| 1 | 334.9 | 72.2 |
-| 4 | 1,279.5 | 274.4 |
-| 8 | 2,205.6 | 418.4 |
-| 16 | 2,576.5 | 473.4 |
+| 1 | 323.9 | 70.9 |
+| 4 | 1,278.7 | 270.4 |
+| 8 | 2,180.0 | 414.9 |
+| 16 | 2,727.3 | 472.5 |
 
 ## Memory and startup
 
@@ -87,5 +89,7 @@ loci bench --db /data/loci.sqlite --queries /data/test.jsonl --frozen-report /da
   --elastic-url http://127.0.0.1:9200/ --elastic-index loci-hotpotqa-bge \
   --loci-url http://127.0.0.1:7711/ --throughput-width 1,4,8,16 --repeats 3 --out /data/out/http-hybrid-raw
 ```
+
+The FiQA plan sets `identifier_rerank` on both engines, as `SearchConfig::hybrid` does.
 
 Leave out `--embed-model` and `--model-cache` for the precomputed-vector track. Each report records its settings, the index and Elasticsearch statistics it was checked against, paired confidence intervals, and throughput rows.

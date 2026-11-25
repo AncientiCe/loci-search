@@ -117,6 +117,17 @@ Loci minus Elasticsearch: nDCG@10 −0.0009 (95% interval −0.0046 to +0.0018),
 
 On FiQA, at equal quality, Loci's p95 is 72% lower and it serves 5.4 times the queries per second at 16 clients. Both corpora now show the same result: a tie on quality and a clear lead on latency and throughput.
 
+### FiQA with identifier weights, as `loci serve` runs it
+
+Hybrid search's 92% cosine reranker could drop an exact code whose embedding pointed elsewhere: on the synthetic fixture, `NOVA000X` fell out of the top five. `SearchConfig::hybrid` now reranks identifier-like queries with 65% coverage, 25% cosine, and 10% fusion. No HotpotQA query matches the rule, so the HotpotQA results above are unchanged. One FiQA test query matches (`Tax: 1099 paper form`), so FiQA ran again with the rule on both engines, the same settings otherwise, and no swap.
+
+| Engine | Candidate recall | Recall@100 | nDCG@10 | p50 | p95 | p99 | Queries per second at 16 clients |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Loci hybrid | 79.07% | 74.00% | 0.4242 | 3.67 ms | 4.73 ms | 5.30 ms | 2,727.3 |
+| Elasticsearch | 77.77% | 74.21% | 0.4253 | 14.53 ms | 17.02 ms | 20.39 ms | 472.5 |
+
+Loci minus Elasticsearch: nDCG@10 −0.0011 (95% interval −0.0049 to +0.0014), Recall@100 −0.21 points (−0.84 to +0.42). The identifier weights lowered nDCG@10 on that one query for both engines, and the comparison is unchanged: tied quality, 72% lower p95, and 5.8 times the queries per second.
+
 ## Can the topology rule regions out?
 
 `loci pruning-dev` scores all one million HotpotQA passages with the regional reranker (92% cosine, 8% term coverage) and compares each plan's top 100 with that exhaustive top 100. The 250 development queries used precomputed vectors on Windows, so the timings compare rows only.

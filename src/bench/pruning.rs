@@ -125,6 +125,12 @@ pub fn pruning_dev(
     );
     ensure!(frozen.limit == K, "the frozen plan must return {K} hits");
     engine.prepare(Strategy::Regional, &frozen)?;
+    if ablate {
+        // Hybrid rows need the persisted HNSW graph even when the frozen plan has none.
+        let mut probe = frozen.clone();
+        probe.graph_candidates = Some(probe.graph_candidates.unwrap_or(150));
+        engine.prepare(Strategy::Hybrid, &probe)?;
+    }
     let engine = &*engine;
     let corpus = engine.ids.len();
 
@@ -204,26 +210,11 @@ pub fn pruning_dev(
         .map(|(row, id)| (id.as_str(), row))
         .collect::<HashMap<_, _>>();
     let mut regional = Vec::new();
-    let mut plans = if ablate {
+    let plans = if ablate {
         ablations(&frozen, corpus)
-            .into_iter()
-            .map(|(name, config)| (name, Strategy::Regional, config))
-            .collect()
     } else {
         Vec::new()
     };
-    if ablate {
-        // The frozen no-region setting as a real hybrid search, beside its regional twin.
-        let mut hybrid = frozen.clone();
-        hybrid.graph_candidates = Some(150);
-        hybrid.graph_width = 128;
-        hybrid.rescue = 60;
-        plans.push((
-            "hybrid_graph_150_width_128_rescue_60".into(),
-            Strategy::Hybrid,
-            hybrid,
-        ));
-    }
     for (name, strategy, config) in plans {
         config.validate()?;
         for query in queries.iter().take(WARMUP) {
@@ -352,7 +343,7 @@ pub fn pruning_dev(
 }
 
 /// The frozen plan, then global rescue and the global graph removed or capped.
-fn ablations(frozen: &SearchConfig, corpus: usize) -> Vec<(String, SearchConfig)> {
+fn ablations(frozen: &SearchConfig, corpus: usize) -> Vec<(String, Strategy, SearchConfig)> {
     let with = |change: &dyn Fn(&mut SearchConfig)| {
         let mut config = frozen.clone();
         change(&mut config);
@@ -386,7 +377,11 @@ fn ablations(frozen: &SearchConfig, corpus: usize) -> Vec<(String, SearchConfig)
             config.graph_candidates = None;
         }),
     ));
-    // No regional scan: the global graph, bounded rescue, and the reranker only.
+    let mut plans = plans
+        .into_iter()
+        .map(|(name, config)| (name, Strategy::Regional, config))
+        .collect::<Vec<_>>();
+    // Hybrid search: the global graph, bounded rescue, and the reranker, no regional scan.
     let grid = [150, 200, 300].into_iter().flat_map(|graph| {
         [128, 256]
             .into_iter()
@@ -394,11 +389,9 @@ fn ablations(frozen: &SearchConfig, corpus: usize) -> Vec<(String, SearchConfig)
     });
     for (graph, width, rescue) in grid {
         plans.push((
-            format!("graph_{graph}_width_{width}_rescue_{rescue}_no_regions"),
+            format!("hybrid_graph_{graph}_width_{width}_rescue_{rescue}"),
+            Strategy::Hybrid,
             with(&|config| {
-                config.max_regions = 1;
-                config.max_chunks = 1;
-                config.max_postings = 1;
                 config.graph_candidates = Some(graph);
                 config.graph_width = width;
                 config.rescue = rescue;

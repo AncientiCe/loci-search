@@ -57,6 +57,10 @@ pub struct SearchConfig {
     pub routing_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regional_rerank: Option<RegionalRerank>,
+    /// Regional or hybrid reranker weights for queries that look like identifiers
+    /// (see [`looks_like_identifier`]). Unset uses `regional_rerank` for every query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifier_rerank: Option<RegionalRerank>,
     /// Reranker weights for Elasticsearch candidate lists. Unset keeps the default,
     /// so a control can give Elasticsearch the same reranker as regional search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +119,7 @@ impl Default for SearchConfig {
             graph_candidates: None,
             routing_ms: 0,
             regional_rerank: None,
+            identifier_rerank: None,
             elastic_rerank: None,
         }
     }
@@ -137,6 +142,8 @@ impl SearchConfig {
                 cosine: 0.92,
                 fusion: 0.0,
             }),
+            // An exact code or ticket number may embed poorly; let its keyword match lead.
+            identifier_rerank: Some(RegionalRerank::default()),
             ..Self::default()
         }
     }
@@ -176,9 +183,13 @@ impl SearchConfig {
             self.graph_candidates.is_none_or(|count| count > 0),
             "graph candidates must be positive"
         );
-        for weights in [self.regional_rerank, self.elastic_rerank]
-            .into_iter()
-            .flatten()
+        for weights in [
+            self.regional_rerank,
+            self.identifier_rerank,
+            self.elastic_rerank,
+        ]
+        .into_iter()
+        .flatten()
         {
             weights.validate()?;
         }
@@ -548,8 +559,15 @@ fn search_with(
     }
     let total_weight = weights.values().sum::<f64>().max(f64::EPSILON);
     let rerank = match strategy {
-        Strategy::Regional | Strategy::Hybrid => config.regional_rerank.unwrap_or_default(),
-        Strategy::Elasticsearch => config.elastic_rerank.unwrap_or_default(),
+        Strategy::Regional | Strategy::Hybrid => match config.identifier_rerank {
+            Some(weights) if looks_like_identifier(&query.text) => weights,
+            _ => config.regional_rerank.unwrap_or_default(),
+        },
+        // Elasticsearch candidates get the same identifier weights, so both engines share one reranker.
+        Strategy::Elasticsearch => match config.identifier_rerank {
+            Some(weights) if looks_like_identifier(&query.text) => weights,
+            _ => config.elastic_rerank.unwrap_or_default(),
+        },
         _ => RegionalRerank::default(),
     };
     let timer = Timer::start(&profile, "rerank");
@@ -625,6 +643,31 @@ fn search_with(
         stop_reason,
         work,
     })
+}
+
+/// Whether `text` reads as an identifier lookup rather than a question: at most four
+/// words, one of which is made only of letters, digits, `-`, `_`, `.`, and `/` and mixes
+/// letters with digits (`NOVA000X`, `LMP-201`), joins letters with an underscore
+/// (`ERR_CONNECTION_RESET`), or is a number of three or more digits.
+pub fn looks_like_identifier(text: &str) -> bool {
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    !words.is_empty()
+        && words.len() <= 4
+        && words.iter().any(|word| {
+            let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+            if !word
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+            {
+                return false;
+            }
+            let letters = word.chars().any(char::is_alphabetic);
+            let digits = word.chars().filter(char::is_ascii_digit).count();
+            (letters && (digits > 0 || word.contains('_')))
+                || (!letters
+                    && digits >= 3
+                    && digits == word.chars().filter(|c| c.is_alphanumeric()).count())
+        })
 }
 
 /// IDF weight of each query term, used by the reranker's term coverage.
@@ -734,4 +777,37 @@ fn metadata_str<'a>(metadata: &'a BTreeMap<String, serde_json::Value>, key: &str
         .get(key)
         .and_then(|value| value.as_str())
         .unwrap_or("")
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::looks_like_identifier;
+
+    #[test]
+    fn identifiers_are_short_codes_not_questions() {
+        for text in [
+            "NOVA000X",
+            "LMP-201",
+            "lamp LMP-201",
+            "ERR_CONNECTION_RESET",
+            "customer_12847",
+            "invoice 48213",
+            "SKU-4421-B red",
+            "Tax: 1099 paper form",
+        ] {
+            assert!(looks_like_identifier(text), "{text}");
+        }
+        for text in [
+            "",
+            "router reset",
+            "how often is the vault key rotated",
+            "Which band released an album in 1994?",
+            "Who directed the 1999 film about a hacker",
+            "top 10 tips",
+            "kubernetes",
+            "Long(100%)-Short(-100%) investment explanation",
+        ] {
+            assert!(!looks_like_identifier(text), "{text}");
+        }
+    }
 }

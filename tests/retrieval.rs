@@ -89,6 +89,60 @@ fn hybrid_search_finds_the_misplaced_identifier_without_a_regional_scan() -> any
 }
 
 #[test]
+fn hybrid_defaults_rank_an_exact_identifier_first_and_leave_questions_alone() -> anyhow::Result<()>
+{
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("identifier.sqlite");
+    let (embedding, passages, queries) = fixture::generate(512)?;
+    ingest(&db, passages, embedding, 16)?;
+    let mut engine = Engine::open(&db)?;
+    let defaults = SearchConfig::hybrid(10);
+    // The fixture's first query is an identifier whose vector points elsewhere.
+    let identifier = &queries[0];
+    assert!(loci_search::ranking::looks_like_identifier(
+        &identifier.text
+    ));
+    let result = engine.search(identifier, Strategy::Hybrid, &defaults)?;
+    let expected = identifier.judgments.keys().next().unwrap();
+    assert_eq!(&result.hits[0].source.id, expected);
+    // Without the identifier weights, the cosine-heavy reranker loses it.
+    let cosine_only = SearchConfig {
+        identifier_rerank: None,
+        ..defaults.clone()
+    };
+    let without = engine.search(identifier, Strategy::Hybrid, &cosine_only)?;
+    assert!(
+        without
+            .hits
+            .iter()
+            .take(5)
+            .all(|hit| &hit.source.id != expected)
+    );
+    // Every other query ranks exactly as before.
+    let scores = |result: SearchResult| {
+        result
+            .hits
+            .into_iter()
+            .map(|hit| (hit.source.id, hit.score.to_bits()))
+            .collect::<Vec<_>>()
+    };
+    let questions = queries
+        .iter()
+        .filter(|query| !loci_search::ranking::looks_like_identifier(&query.text))
+        .collect::<Vec<_>>();
+    assert!(!questions.is_empty());
+    for query in questions {
+        assert_eq!(
+            scores(engine.search(query, Strategy::Hybrid, &defaults)?),
+            scores(engine.search(query, Strategy::Hybrid, &cosine_only)?),
+            "{}",
+            query.text
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn repeat_ingest_keeps_one_chunk_and_open_readers_keep_their_snapshot() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
     let db = directory.path().join("test.sqlite");

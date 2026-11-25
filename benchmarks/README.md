@@ -61,7 +61,21 @@ Queries per second with concurrent clients:
 | 8 | 319.7 | 198.8 | 1,060.3 | 453.4 |
 | 16 | 374.7 | 234.9 | 1,656.4 | 548.4 |
 
-At equal quality, Loci's raw-text p95 is 25.6% lower than Elasticsearch's, which meets the 20% target, and Loci serves more queries per second at every concurrency. Loci ran in-process in the benchmark, while Elasticsearch answered over loopback HTTP, so part of the gap is the HTTP and JSON round trip a client of either server would pay. A server-to-server comparison through `loci serve` has not run yet. This is one corpus.
+At equal quality, Loci's raw-text p95 is 25.6% lower than Elasticsearch's, which meets the 20% target, and Loci serves more queries per second at every concurrency. Loci ran in-process in that run, while Elasticsearch answered over loopback HTTP.
+
+### Both engines over HTTP
+
+`loci bench-serve` held the same prepared engine and answered over loopback HTTP; `loci bench --loci-url` sent it the query text and vector exactly as it sends them to Elasticsearch, and read the returned passages from its own index, as the Elasticsearch path does. The Docker VM had 19.5 GiB. Quality was identical to the in-process run.
+
+| Track | Loci p50 / p95 | Elasticsearch p50 / p95 | Loci p95 vs Elasticsearch |
+| --- | --- | --- | ---: |
+| Precomputed vectors | 7.12 / 13.39 ms | 13.14 / 19.49 ms | −31.3% |
+| Raw text, run A | 17.75 / 25.65 ms | 23.34 / 32.40 ms | −20.8% |
+| Raw text, run B, Elasticsearch heap locked | 17.85 / 26.22 ms | 23.59 / 32.37 ms | −19.0% |
+
+Queries per second at 16 clients: raw text 377.3 and 367.3 for Loci against 259.9 and 258.5 for Elasticsearch; precomputed vectors 1,357.8 against 560.4. Loci led at every concurrency in every run.
+
+The VM paged memory to swap during both raw-text runs although memory was available. In run A it paged 1.8 GB of Elasticsearch's Java heap; in run B, with `bootstrap.memory_lock`, it paged about 200 MB of the Loci server and part of the benchmark client instead. The precomputed-vector run saw almost no swap-ins. Over HTTP, the raw-text p95 lead is therefore about 20%, on the edge of the target, and the engine-only lead is about 31%. This is one corpus.
 
 ## Can the topology rule regions out?
 

@@ -506,9 +506,17 @@ fn search_with(
     let mut reranked = Vec::with_capacity(fused.len());
     for (id, candidate) in fused {
         let (score, source) = if hybrid {
-            let (matched_weight, source) = if strategy == Strategy::Regional {
+            // Every strategy reads coverage from the in-memory postings when they are
+            // loaded, so an external engine's candidates are not charged for re-reading
+            // and tokenizing passage text. Both paths match the same terms.
+            let postings = if strategy == Strategy::Regional {
+                Some(engine.regional_index())
+            } else {
+                engine.loaded_regional_index()
+            };
+            let (matched_weight, source) = if let Some(index) = postings {
                 let matched_weight = if rerank.coverage > 0.0 {
-                    engine.regional_index().coverage(id, &weights)
+                    index.coverage(id, &weights)
                 } else {
                     0.0
                 };

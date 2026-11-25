@@ -72,6 +72,37 @@ fn rejects_query_vectors_from_a_different_embedding_model() -> anyhow::Result<()
 }
 
 #[test]
+fn coverage_from_postings_matches_coverage_from_text() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("coverage.sqlite");
+    let (embedding, passages, queries) = fixture::generate(256)?;
+    ingest(&db, passages, embedding, 16)?;
+    let mut engine = Engine::open(&db)?;
+    let config = SearchConfig::default();
+    let scores = |result: SearchResult| {
+        result
+            .hits
+            .into_iter()
+            .map(|hit| (hit.source.id, hit.score.to_bits()))
+            .collect::<Vec<_>>()
+    };
+    // Global search reads passage text until a regional search loads the postings.
+    let from_text = queries
+        .iter()
+        .take(8)
+        .map(|query| engine.search(query, Strategy::Global, &config).map(scores))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    engine.prepare(Strategy::Regional, &config)?;
+    for (query, expected) in queries.iter().take(8).zip(from_text) {
+        assert_eq!(
+            scores(engine.search(query, Strategy::Global, &config)?),
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn regional_reranker_preserves_candidates_and_global_control_scores() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
     let db = directory.path().join("rerank.sqlite");

@@ -588,6 +588,11 @@ impl Engine {
         self.regional.as_ref().expect("prepared regional index")
     }
 
+    /// The in-memory regional index, when a regional search has prepared it.
+    pub(crate) fn loaded_regional_index(&self) -> Option<&RegionalIndex> {
+        self.regional.as_ref()
+    }
+
     pub fn search(
         &mut self,
         query: &Query,

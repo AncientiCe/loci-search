@@ -37,6 +37,24 @@ The earlier FiQA result, 8.67 percentage points of Recall@100 above Elasticsearc
 
 With the same embeddings and reranker, Loci matches Elasticsearch on recall and top-10 quality and does not beat it on latency or throughput. The cosine-heavy reranker over fused BM25 and kNN candidates helped both engines.
 
+## Can the topology rule regions out?
+
+`loci pruning-dev` scores all one million HotpotQA passages with the regional reranker (92% cosine, 8% term coverage) and compares each plan's top 100 with that exhaustive top 100. The 250 development queries used precomputed vectors on Windows, so the timings compare rows only.
+
+| Plan | Overlap with exhaustive top 100 | Recall@100 | Passages scored per query |
+| --- | ---: | ---: | ---: |
+| Exhaustive scan | 100% | 93.00% | 1,000,000 |
+| Frozen regional plan | 85.54% | 92.20% | 12,327 |
+| Global rescue capped at 1% of the corpus | 85.54% | 92.20% | 12,327 |
+| No global rescue | 87.24% | 88.60% | 11,939 |
+| No HNSW graph | 62.56% | 89.40% | 12,327 |
+| Regions only | 58.64% | 57.40% | 11,939 |
+| Branch-and-bound, safe radius | 100% | 93.00% | 1,000,000 |
+| Branch-and-bound, radius × 0.1 | 99.99% | 93.00% | 702,088 |
+| Branch-and-bound, centroid only | 99.57% | 93.00% | 287,761 |
+
+Each of the 1,388 leaves spans 50.5° to 54.4° around its centroid at the 5th and 95th percentiles. A cone that wide gives nearly every leaf a cosine bound above the 100th-best score, so the safe bound skipped no passage. Even scoring leaves by centroid similarity alone, which gives up the guarantee, had to score 29% of the corpus before it could stop. The topology routes queries usefully, but it cannot certify that a region holds no top-100 passage. The HNSW graph and global rescue supply most of the regional plan's recall.
+
 ## Query latency and recall
 
 | Run | Passages | Queries × passes | Strategy | Recall@100 | Warm p50 | Warm p95 |

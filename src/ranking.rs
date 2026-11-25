@@ -295,10 +295,11 @@ pub(crate) fn search_filtered(
     )
 }
 
-pub(crate) fn profile_regional(
+pub(crate) fn profile_search(
     engine: &Engine,
     query: &Query,
     vector: &[f32],
+    strategy: Strategy,
     config: &SearchConfig,
     phases: &mut Phases,
 ) -> Result<SearchResult> {
@@ -306,7 +307,7 @@ pub(crate) fn profile_regional(
         engine,
         query,
         vector,
-        Strategy::Regional,
+        strategy,
         config,
         None,
         None,
@@ -355,6 +356,33 @@ fn search_with(
     let mut stop_reason = "complete";
     let mut rescue_scores = None;
     let mut graph_ranks = HashMap::new();
+    // Hybrid search runs the graph first: its neighbours seed the keyword search's
+    // threshold, so MaxScore can skip common terms from the start.
+    let mut hybrid_nearest = None;
+    if strategy == Strategy::Hybrid {
+        let count = config
+            .graph_candidates
+            .ok_or_else(|| anyhow::anyhow!("hybrid search needs graph_candidates"))?;
+        let timer = Timer::start(&profile, "graph");
+        let (graph, comparisons) = engine.nearest_dense(vector, count, config.graph_width);
+        work.graph_vector_comparisons = Some(comparisons);
+        // A filtered search keeps only admitted graph neighbours (post-filtering).
+        let mut nearest = graph
+            .into_iter()
+            .filter(|hit| allow.is_none_or(|allow| allow[hit.id]))
+            .collect::<Vec<_>>();
+        for (rank, hit) in nearest.iter().enumerate() {
+            graph_ranks.insert(hit.id, rank + 1);
+        }
+        nearest.sort_unstable_by(|a, b| b.cmp(a));
+        nearest.truncate(config.depth);
+        timer.finish(&mut profile);
+        hybrid_nearest = Some(nearest);
+    }
+    let seeds = hybrid_nearest
+        .as_ref()
+        .map(|nearest| nearest.iter().map(|hit| hit.id).collect::<Vec<_>>())
+        .unwrap_or_default();
     let timer = Timer::start(&profile, "rescue");
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
@@ -365,6 +393,7 @@ fn search_with(
                 config.rescue,
                 config.rescue_max_scored,
                 allow,
+                &seeds,
             )?;
             work.global_rescue_chunks_scored = rescue.scores.as_ref().map(|scores| scores.count);
             work.global_rescue_budget_hit = config.rescue_max_scored.map(|_| rescue.budget_hit);
@@ -384,11 +413,13 @@ fn search_with(
         strategy,
         Strategy::Regional | Strategy::Hybrid | Strategy::Global | Strategy::Elasticsearch
     );
+    let timer = Timer::start(&profile, "weights");
     let weights = if hybrid {
         coverage_weights(engine, &query_terms)?
     } else {
         BTreeMap::new()
     };
+    timer.finish(&mut profile);
     let mut candidates = BTreeMap::<usize, Candidate>::new();
     for (rank, &id) in global_lexical.iter().enumerate() {
         let candidate = candidates.entry(id).or_default();
@@ -421,26 +452,7 @@ fn search_with(
                 })
                 .collect()
         }
-        Strategy::Hybrid => {
-            let count = config
-                .graph_candidates
-                .ok_or_else(|| anyhow::anyhow!("hybrid search needs graph_candidates"))?;
-            let timer = Timer::start(&profile, "graph");
-            let (graph, comparisons) = engine.nearest_dense(vector, count, config.graph_width);
-            work.graph_vector_comparisons = Some(comparisons);
-            // A filtered search keeps only admitted graph neighbours (post-filtering).
-            let mut nearest = graph
-                .into_iter()
-                .filter(|hit| allow.is_none_or(|allow| allow[hit.id]))
-                .collect::<Vec<_>>();
-            for (rank, hit) in nearest.iter().enumerate() {
-                graph_ranks.insert(hit.id, rank + 1);
-            }
-            nearest.sort_unstable_by(|a, b| b.cmp(a));
-            nearest.truncate(config.depth);
-            timer.finish(&mut profile);
-            nearest
-        }
+        Strategy::Hybrid => hybrid_nearest.take().expect("hybrid graph ran above"),
         Strategy::Regional => {
             let selection = regional::select(
                 engine,

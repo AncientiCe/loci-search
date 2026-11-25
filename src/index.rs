@@ -684,19 +684,16 @@ impl Engine {
         ranking::search_filtered(self, query, &vector, strategy, config, allow)
     }
 
-    pub(crate) fn profile_regional(
+    pub(crate) fn profile_search(
         &mut self,
         query: &Query,
+        strategy: Strategy,
         config: &SearchConfig,
         phases: &mut crate::profile::Phases,
     ) -> Result<SearchResult> {
-        config.validate()?;
+        self.prepare(strategy, config)?;
         let vector = self.query_vector(query)?;
-        self.prepare_regional()?;
-        if config.graph_candidates.is_some() {
-            self.prepare_dense_graph()?;
-        }
-        ranking::profile_regional(self, query, &vector, config, phases)
+        ranking::profile_search(self, query, &vector, strategy, config, phases)
     }
 
     pub(crate) fn query_vector(&self, query: &Query) -> Result<Vec<f32>> {

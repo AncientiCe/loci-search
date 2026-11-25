@@ -202,7 +202,7 @@ impl RegionalIndex {
         limit: usize,
         max_scored: Option<usize>,
     ) -> Result<LexicalRescue> {
-        self.rescue_filtered(engine, terms, limit, max_scored, None)
+        self.rescue_filtered(engine, terms, limit, max_scored, None, &[])
     }
 
     /// Global lexical rescue over the passages `allow` admits (all when `None`).
@@ -213,6 +213,7 @@ impl RegionalIndex {
         limit: usize,
         max_scored: Option<usize>,
         allow: Option<&[bool]>,
+        seeds: &[usize],
     ) -> Result<LexicalRescue> {
         if terms.is_empty() || limit == 0 {
             return Ok(LexicalRescue {
@@ -248,6 +249,7 @@ impl RegionalIndex {
                 limit,
                 budget,
                 allow,
+                seeds,
             ));
         }
         let mut scores = vec![0.0; self.rescue_norms.len()];
@@ -657,6 +659,48 @@ mod tests {
     }
 
     #[test]
+    fn seeded_rescue_returns_the_unseeded_top_k() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("seeded.sqlite");
+        let (embedding, corpus, queries) = fixture::generate(2_000)?;
+        index::ingest(&db, corpus, embedding, 64)?;
+        let mut engine = Engine::open(&db)?;
+        engine.prepare_regional()?;
+        let index = engine.regional_index();
+        let passages = engine.ids.len();
+        let mut seeded_any = false;
+        for query in queries.iter().take(24) {
+            let tokens = terms(&query.text).collect::<BTreeSet<_>>();
+            let vector = engine.query_vector(query)?;
+            let neighbours = engine
+                .exact(&vector, 150)
+                .into_iter()
+                .map(|hit| hit.id)
+                .collect::<Vec<_>>();
+            let spread = (0..passages).step_by(37).collect::<Vec<_>>();
+            for limit in [1, 10, 60] {
+                let plain =
+                    index.rescue_filtered(&engine, &tokens, limit, Some(passages), None, &[])?;
+                for seeds in [&neighbours[..], &spread[..], &[0, 0, passages - 1][..]] {
+                    let seeded = index.rescue_filtered(
+                        &engine,
+                        &tokens,
+                        limit,
+                        Some(passages),
+                        None,
+                        seeds,
+                    )?;
+                    assert_eq!(seeded.ranked, plain.ranked, "{} limit {limit}", query.text);
+                    assert!(!seeded.budget_hit);
+                    seeded_any |= seeded.scores.is_some_and(|scores| scores.count > 0);
+                }
+            }
+        }
+        assert!(seeded_any);
+        Ok(())
+    }
+
+    #[test]
     fn filtered_search_returns_only_admitted_passages() -> Result<()> {
         use crate::ranking::{RegionalRerank, SearchConfig, Strategy, coverage_weights};
         let dir = tempfile::tempdir()?;
@@ -723,6 +767,7 @@ mod tests {
                 10,
                 Some(2_000),
                 Some(&allow),
+                &[],
             )?;
             assert!(rescue.ranked.iter().all(|&id| allow[id]));
             let vector = engine.query_vector(query)?;

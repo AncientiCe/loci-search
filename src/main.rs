@@ -592,8 +592,9 @@ fn main() -> Result<()> {
                 frozen = frozen.with_graph_candidates(count)?;
             }
             let config = frozen.regional_config(&engine)?;
+            let strategy = frozen.loci_strategy()?;
             let queries = jsonl::<Query>(&queries)?;
-            let report = profile::regional(&mut engine, &queries, config)?;
+            let report = profile::run(&mut engine, &queries, strategy, config)?;
             write_json(&out, &report)?;
         }
         Command::Fixture { out, chunks } => {

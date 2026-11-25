@@ -288,7 +288,7 @@ pub fn filter_dev(
         )];
         for ((name, config), samples) in plans.into_iter().zip(&loci) {
             engines.push(summarize(
-                name.into(),
+                name,
                 Some(config),
                 samples,
                 &oracle,

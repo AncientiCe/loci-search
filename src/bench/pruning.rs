@@ -371,6 +371,25 @@ fn ablations(frozen: &SearchConfig, corpus: usize) -> Vec<(String, SearchConfig)
             config.graph_candidates = None;
         }),
     ));
+    // No regional scan: the global graph, bounded rescue, and the reranker only.
+    for (graph, width, rescue) in [
+        (100, 256, 40),
+        (200, 256, 40),
+        (200, 256, 100),
+        (200, 128, 100),
+    ] {
+        plans.push((
+            format!("graph_{graph}_width_{width}_rescue_{rescue}_no_regions"),
+            with(&|config| {
+                config.max_regions = 1;
+                config.max_chunks = 1;
+                config.max_postings = 1;
+                config.graph_candidates = Some(graph);
+                config.graph_width = width;
+                config.rescue = rescue;
+            }),
+        ));
+    }
     plans
 }
 

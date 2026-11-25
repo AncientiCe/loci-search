@@ -138,6 +138,9 @@ enum Command {
         /// Skip the global rescue and graph ablations.
         #[arg(long)]
         bound_only: bool,
+        /// Skip branch-and-bound and run only the plan ablations.
+        #[arg(long, conflicts_with = "bound_only")]
+        no_bound: bool,
     },
     /// Audit candidate and final ranks on development queries against frozen Elasticsearch.
     RecallDev {
@@ -504,12 +507,18 @@ fn main() -> Result<()> {
             out,
             shrinks,
             bound_only,
+            no_bound,
         } => {
             let mut engine = Engine::open(&db)?;
             let development = jsonl::<Query>(&dev)?;
             let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
-            let report =
-                bench::pruning_dev(&mut engine, &development, &frozen, &shrinks, !bound_only)?;
+            let report = bench::pruning_dev(
+                &mut engine,
+                &development,
+                &frozen,
+                if no_bound { &[] } else { &shrinks },
+                !bound_only,
+            )?;
             write_json(&out, &report)?;
         }
         Command::RecallDev {

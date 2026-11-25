@@ -55,6 +55,19 @@ With the same embeddings and reranker, Loci matches Elasticsearch on recall and 
 
 Each of the 1,388 leaves spans 50.5° to 54.4° around its centroid at the 5th and 95th percentiles. A cone that wide gives nearly every leaf a cosine bound above the 100th-best score, so the safe bound skipped no passage. Even scoring leaves by centroid similarity alone, which gives up the guarantee, had to score 29% of the corpus before it could stop. The topology routes queries usefully, but it cannot certify that a region holds no top-100 passage. The HNSW graph and global rescue supply most of the regional plan's recall.
 
+## Filtered search
+
+`loci filter-dev` restricts both engines to passages whose id hashes into the first buckets of 1,000, a filter unrelated to topic. Elasticsearch ran from `loci elastic-buckets`, an index built from Loci's own passages and vectors with an integer `bucket` field, and its candidates were reranked with Loci's reranker. Each cell gives overlap with the exhaustive filtered top 100, then p95 latency. The 250 development queries ran on Windows, where Elasticsearch had 4 processors, so the latencies are indicative only.
+
+| Admitted | Brute force over admitted | Loci, region budget × 1 / × 2 / × 4 | Elasticsearch, 200 / 400 / 1536 kNN candidates |
+| --- | --- | --- | --- |
+| 0.1% | 100% / 3.6 ms | 96.7% / 76.1 ms (× 1) | 99.9% / 23.9 ms (1536) |
+| 1% | 100% / 22.9 ms | 98.3% / 75.0 ms (× 1) | 98.5% / 30.3 ms (1536) |
+| 10% | 100% / 203 ms | 90.5% / 29.5 · 93.9% / 47.8 · 95.4% / 86.5 ms | 92.5% / 33.6 · 94.2% / 35.5 · 95.5% / 75.4 ms |
+| 50% | 100% / 847 ms | 82.9% / 19.3 · 87.4% / 26.6 · 90.3% / 40.8 ms | 87.7% / 39.2 · 90.4% / 37.7 · 92.4% / 39.0 ms |
+
+Below 1% admitted, scoring the admitted passages directly is fastest and exact. At 10%, Elasticsearch with 400 candidates reaches 94.2% overlap at 35.5 ms, where Loci needs a doubled budget and 47.8 ms. At 50%, Loci is faster only at the low-quality end and cannot reach Elasticsearch's 92.4%. Filters do not give Loci an advantage: Elasticsearch's slowdown at 10% came from its 1,536-candidate setting, and fewer candidates kept its quality.
+
 ## Query latency and recall
 
 | Run | Passages | Queries × passes | Strategy | Recall@100 | Warm p50 | Warm p95 |

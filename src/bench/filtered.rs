@@ -89,7 +89,13 @@ pub fn filter_dev(
     source: &FrozenComparison,
     elastic: Option<&elastic::Client>,
     selectivities: &[f64],
+    budget_scales: &[f64],
+    elastic_candidates: &[usize],
 ) -> Result<FilterReport> {
+    ensure!(
+        budget_scales.iter().all(|&scale| scale >= 1.0),
+        "budget scales must be at least 1"
+    );
     validate_queries(engine, queries)?;
     let frozen = source.regional_config(engine)?.clone();
     let rerank = frozen
@@ -161,13 +167,27 @@ pub fn filter_dev(
         scaled.graph_candidates = None;
         scaled.max_regions = ((frozen.max_regions as f64 * scale).ceil() as usize).min(leaves);
         scaled.max_postings = (frozen.max_postings as f64 * scale).ceil() as usize;
-        let mut scaled_graph = scaled.clone();
-        scaled_graph.graph_candidates = frozen.graph_candidates;
-        let plans = [
-            ("loci_frozen_graph_postfilter", frozen.clone()),
-            ("loci_scaled_regions", scaled),
-            ("loci_scaled_regions_graph_postfilter", scaled_graph),
+        let mut plans = vec![
+            ("loci_frozen_graph_postfilter".to_string(), frozen.clone()),
+            ("loci_scaled_regions".to_string(), scaled.clone()),
         ];
+        for &budget in budget_scales {
+            let mut config = scaled.clone();
+            config.graph_candidates = frozen.graph_candidates;
+            config.max_chunks = (frozen.max_chunks as f64 * budget).ceil() as usize;
+            config.max_regions =
+                ((frozen.max_regions as f64 * scale * budget).ceil() as usize).min(leaves);
+            config.max_postings = (frozen.max_postings as f64 * scale * budget).ceil() as usize;
+            plans.push((
+                format!("loci_scaled_regions_graph_postfilter_x{budget}"),
+                config,
+            ));
+        }
+        let candidate_counts = if elastic_candidates.is_empty() {
+            vec![elastic_options.num_candidates]
+        } else {
+            elastic_candidates.to_vec()
+        };
         eprintln!(
             "Selectivity {selectivity}: {} passages admitted",
             admitted.len()
@@ -189,7 +209,10 @@ pub fn filter_dev(
         }
 
         let mut loci = plans.iter().map(|_| Samples::default()).collect::<Vec<_>>();
-        let mut es = Samples::default();
+        let mut es = candidate_counts
+            .iter()
+            .map(|_| Samples::default())
+            .collect::<Vec<_>>();
         let run_loci = |config: &SearchConfig, query: &Query| -> Result<Sample> {
             let started = Instant::now();
             let result = engine.search_filtered(query, config, &allow)?;
@@ -203,32 +226,43 @@ pub fn filter_dev(
                 )
             })
         };
-        let run_elastic = |client: &elastic::Client, query: &Query| -> Result<Sample> {
-            let started = Instant::now();
-            let result =
-                client.search_filtered(engine, query, &elastic_config, elastic_options, &filter)?;
-            let elapsed_ms = milliseconds(started);
-            sample(&rows, &result, elapsed_ms, |_| (0, 0))
-        };
+        let run_elastic =
+            |client: &elastic::Client, candidates: usize, query: &Query| -> Result<Sample> {
+                let options = elastic::Options {
+                    num_candidates: candidates,
+                    ..elastic_options
+                };
+                let started = Instant::now();
+                let result =
+                    client.search_filtered(engine, query, &elastic_config, options, &filter)?;
+                let elapsed_ms = milliseconds(started);
+                sample(&rows, &result, elapsed_ms, |_| (0, 0))
+            };
         for query in queries.iter().take(WARMUP) {
             for (_, config) in &plans {
                 run_loci(config, query)?;
             }
             if let Some(client) = elastic {
-                run_elastic(client, query)?;
+                for &candidates in &candidate_counts {
+                    run_elastic(client, candidates, query)?;
+                }
             }
         }
         // Alternate which engine goes first so drift and caching do not favour one.
         for (i, query) in queries.iter().enumerate() {
             let elastic_first = i % 2 == 1;
             if elastic_first && let Some(client) = elastic {
-                es.0.push(run_elastic(client, query)?);
+                for (&candidates, samples) in candidate_counts.iter().zip(&mut es) {
+                    samples.0.push(run_elastic(client, candidates, query)?);
+                }
             }
             for ((_, config), samples) in plans.iter().zip(&mut loci) {
                 samples.0.push(run_loci(config, query)?);
             }
             if !elastic_first && let Some(client) = elastic {
-                es.0.push(run_elastic(client, query)?);
+                for (&candidates, samples) in candidate_counts.iter().zip(&mut es) {
+                    samples.0.push(run_elastic(client, candidates, query)?);
+                }
             }
         }
 
@@ -262,13 +296,15 @@ pub fn filter_dev(
             ));
         }
         if elastic.is_some() {
-            engines.push(summarize(
-                "elasticsearch_same_reranker".into(),
-                Some(elastic_config.clone()),
-                &es,
-                &oracle,
-                &positives,
-            ));
+            for (candidates, samples) in candidate_counts.iter().zip(&es) {
+                engines.push(summarize(
+                    format!("elasticsearch_same_reranker_candidates_{candidates}"),
+                    Some(elastic_config.clone()),
+                    samples,
+                    &oracle,
+                    &positives,
+                ));
+            }
         }
         for row in &engines {
             eprintln!(

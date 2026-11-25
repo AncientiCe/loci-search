@@ -113,6 +113,12 @@ enum Command {
         /// Fractions of the corpus a filter admits.
         #[arg(long, value_delimiter = ',', default_value = "0.001,0.01,0.1,0.5")]
         selectivities: Vec<f64>,
+        /// Extra Loci plans: chunk, region, and postings budgets multiplied by each scale.
+        #[arg(long, value_delimiter = ',', default_value = "1")]
+        budget_scales: Vec<f64>,
+        /// Elasticsearch kNN candidate counts to try (default: the frozen setting).
+        #[arg(long, value_delimiter = ',')]
+        elastic_candidates: Vec<usize>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -468,6 +474,8 @@ fn main() -> Result<()> {
             elastic_url,
             elastic_index,
             selectivities,
+            budget_scales,
+            elastic_candidates,
             out,
         } => {
             let mut engine = Engine::open(&db)?;
@@ -484,6 +492,8 @@ fn main() -> Result<()> {
                 &frozen,
                 client.as_ref(),
                 &selectivities,
+                &budget_scales,
+                &elastic_candidates,
             )?;
             write_json(&out, &report)?;
         }

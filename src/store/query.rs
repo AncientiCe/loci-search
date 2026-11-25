@@ -236,13 +236,11 @@ fn mapped_date(settings: &Value, key: &str) -> bool {
     matches!(kind, Some("date" | "date[]"))
 }
 
-fn date_value(v: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+fn date_value(v: &Value) -> Option<jiff::Timestamp> {
     if let Some(s) = v.as_str() {
-        return chrono::DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|t| t.to_utc());
+        return s.parse().ok();
     }
-    chrono::DateTime::from_timestamp(v.as_i64()?, 0)
+    jiff::Timestamp::from_second(v.as_i64()?).ok()
 }
 
 fn compare_typed(a: &Value, b: &Value, date: bool) -> Option<Ordering> {

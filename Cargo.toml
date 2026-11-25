@@ -37,7 +37,6 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
 sha2 = "0.10"
 tempfile = "3"

@@ -39,7 +39,7 @@ pub(super) fn timestamp(value: &Value) -> Result<i64> {
     let s = value
         .as_str()
         .context("timestamp must be epoch seconds or RFC3339")?;
-    Ok(chrono::DateTime::parse_from_rfc3339(s)?.timestamp())
+    Ok(s.parse::<jiff::Timestamp>()?.as_second())
 }
 
 pub(super) fn initialize(db: &Connection) -> Result<()> {

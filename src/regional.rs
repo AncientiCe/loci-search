@@ -107,9 +107,8 @@ impl RegionalIndex {
                 1.2 * (0.25 + 0.75 * len as f64 / if average == 0.0 { 1.0 } else { average })
             })
             .collect::<Vec<_>>();
-        let mut stmt = engine
-            .conn
-            .prepare("SELECT rowid, text FROM artifacts ORDER BY rowid")?;
+        let conn = engine.conn.get()?;
+        let mut stmt = conn.prepare("SELECT rowid, text FROM artifacts ORDER BY rowid")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let id: usize = row.get(0)?;

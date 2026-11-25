@@ -304,9 +304,8 @@ fn search_with(
         Strategy::Regional | Strategy::Global | Strategy::Elasticsearch
     );
     if hybrid {
-        let mut df = engine
-            .conn
-            .prepare_cached("SELECT df FROM term_stats WHERE term=?")?;
+        let conn = engine.conn.get()?;
+        let mut df = conn.prepare_cached("SELECT df FROM term_stats WHERE term=?")?;
         for term in &query_terms {
             let count = df
                 .query_row([term], |row| row.get::<_, usize>(0))

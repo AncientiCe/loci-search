@@ -12,9 +12,87 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    ops::Deref,
     path::{Path, PathBuf},
+    sync::Mutex,
     time::Duration,
 };
+
+/// Read-only SQLite connections pinned to one index snapshot.
+///
+/// A connection serves one search at a time, so concurrent searches over a shared
+/// `Engine` each take their own. Extra connections open lazily and must see the
+/// same manifest as the first, so every reader stays on one generation.
+pub(crate) struct Readers {
+    path: PathBuf,
+    manifest: String,
+    idle: Mutex<Vec<Connection>>,
+}
+
+pub(crate) struct Reader<'a> {
+    pool: &'a Readers,
+    conn: Option<Connection>,
+}
+
+impl Readers {
+    fn new(conn: Connection, path: &Path, manifest: String) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            manifest,
+            idle: Mutex::new(vec![conn]),
+        }
+    }
+
+    pub(crate) fn get(&self) -> Result<Reader<'_>> {
+        let idle = self
+            .idle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index reader pool poisoned"))?
+            .pop();
+        let conn = match idle {
+            Some(conn) => conn,
+            None => {
+                let conn = open_snapshot(&self.path)?;
+                let json: String =
+                    conn.query_row("SELECT json FROM manifest", [], |row| row.get(0))?;
+                ensure!(
+                    json == self.manifest,
+                    "index {} changed after it was opened",
+                    self.path.display()
+                );
+                conn
+            }
+        };
+        Ok(Reader {
+            pool: self,
+            conn: Some(conn),
+        })
+    }
+}
+
+impl Deref for Reader<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn.as_ref().expect("reader connection")
+    }
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        if let (Some(conn), Ok(mut idle)) = (self.conn.take(), self.pool.idle.lock()) {
+            idle.push(conn);
+        }
+    }
+}
+
+fn open_snapshot(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    // Keep lexical lookups on the same snapshot as the in-memory vectors and topology.
+    conn.execute_batch("BEGIN")?;
+    Ok(conn)
+}
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS manifest (json TEXT NOT NULL);
@@ -332,7 +410,7 @@ fn load_palace_stats(conn: &Connection, chunks: usize) -> Result<PalaceStats> {
 
 pub struct Engine {
     pub manifest: Manifest,
-    pub(crate) conn: Connection,
+    pub(crate) conn: Readers,
     pub(crate) ids: Vec<String>,
     pub(crate) vectors: Vec<Vec<f32>>,
     pub(crate) lengths: Vec<usize>,
@@ -346,10 +424,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        conn.busy_timeout(Duration::from_secs(5))?;
-        // Keep lexical lookups on the same snapshot as the in-memory vectors and topology.
-        conn.execute_batch("BEGIN")?;
+        let conn = open_snapshot(path)?;
         let json: String = conn.query_row("SELECT json FROM manifest", [], |row| row.get(0))?;
         let manifest: Manifest = serde_json::from_str(&json)?;
         ensure!(
@@ -414,7 +489,7 @@ impl Engine {
         };
         Ok(Self {
             manifest,
-            conn,
+            conn: Readers::new(conn, path, json),
             ids,
             vectors,
             lengths,
@@ -431,6 +506,10 @@ impl Engine {
         if self.graph.is_none() {
             self.graph = Some(Graph::build(&self.vectors));
         }
+    }
+
+    pub fn database_path(&self) -> &Path {
+        &self.path
     }
 
     /// Path of the persisted batched HNSW graph for this index.
@@ -515,8 +594,13 @@ impl Engine {
         strategy: Strategy,
         config: &SearchConfig,
     ) -> Result<SearchResult> {
+        self.prepare(strategy, config)?;
+        self.search_prepared(query, strategy, config)
+    }
+
+    /// Load the in-memory structures `strategy` needs under `config`.
+    pub fn prepare(&mut self, strategy: Strategy, config: &SearchConfig) -> Result<()> {
         config.validate()?;
-        let vector = self.query_vector(query)?;
         if strategy == Strategy::Global {
             self.prepare_global();
         }
@@ -526,6 +610,27 @@ impl Engine {
                 self.prepare_dense_graph()?;
             }
         }
+        Ok(())
+    }
+
+    /// Search through a shared engine after [`Engine::prepare`] ran for this strategy and config.
+    pub fn search_prepared(
+        &self,
+        query: &Query,
+        strategy: Strategy,
+        config: &SearchConfig,
+    ) -> Result<SearchResult> {
+        config.validate()?;
+        let ready = match strategy {
+            Strategy::Global => self.graph.is_some(),
+            Strategy::Regional => {
+                self.regional.is_some()
+                    && (config.graph_candidates.is_none() || self.dense_graph.is_some())
+            }
+            _ => true,
+        };
+        ensure!(ready, "prepare the engine for {strategy:?} before a shared search");
+        let vector = self.query_vector(query)?;
         ranking::search(self, query, &vector, strategy, config)
     }
 
@@ -593,7 +698,8 @@ impl Engine {
             .map(|term| format!("\"{term}\""))
             .collect::<Vec<_>>()
             .join(" OR ");
-        let mut stmt = self.conn.prepare_cached(
+        let conn = self.conn.get()?;
+        let mut stmt = conn.prepare_cached(
             "SELECT rowid FROM lexical WHERE lexical MATCH ? ORDER BY rank, rowid LIMIT ?",
         )?;
         let rows = stmt.query_map(params![matches, limit], |row| row.get(0))?;
@@ -601,7 +707,8 @@ impl Engine {
     }
 
     pub(crate) fn source(&self, id: usize) -> Result<Source> {
-        let mut stmt = self.conn.prepare_cached(
+        let conn = self.conn.get()?;
+        let mut stmt = conn.prepare_cached(
             "SELECT id, document, revision, start, end, text, metadata FROM artifacts WHERE rowid=?")?;
         let (id, document, revision, start, end, text, metadata): (_, _, _, _, _, _, String) = stmt
             .query_row([id], |row| {

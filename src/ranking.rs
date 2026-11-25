@@ -132,8 +132,8 @@ impl Default for SearchConfig {
 
 impl SearchConfig {
     /// Hybrid search with the settings frozen on HotpotQA and FiQA development queries:
-    /// 150 graph candidates at width 128, 60 rescue hits, and the 8% coverage, 92% cosine
-    /// reranker over 200 candidates.
+    /// 150 graph candidates at width 128, 60 rescue hits from the 8 rarest query terms, and
+    /// the 8% coverage, 92% cosine reranker over 200 candidates.
     pub fn hybrid(limit: usize) -> Self {
         Self {
             limit,
@@ -141,6 +141,7 @@ impl SearchConfig {
             graph_width: 128,
             rescue: 60,
             rescue_max_scored: Some(256_000),
+            rescue_max_terms: Some(8),
             graph_candidates: Some(150),
             regional_rerank: Some(RegionalRerank {
                 coverage: 0.08,

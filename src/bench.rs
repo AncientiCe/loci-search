@@ -13,8 +13,10 @@ use std::{
     time::Instant,
 };
 
+mod filtered;
 mod pruning;
 mod recall;
+pub use filtered::{FilterReport, build_elastic_buckets, filter_dev};
 pub use pruning::{PruningReport, pruning_dev};
 pub use recall::{diagnose_recall, tune_bounded_rescue, tune_regional_rerank};
 

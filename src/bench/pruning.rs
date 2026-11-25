@@ -171,7 +171,7 @@ pub fn pruning_dev(
             rerank,
         };
         let started = Instant::now();
-        let top = bound::exhaustive(engine, &item.vector, &objective, K);
+        let top = bound::exhaustive(engine, &item.vector, &objective, K, None);
         oracle_ms.push(milliseconds(started));
         item.oracle = top.into_iter().map(|hit| hit.id).collect();
     }

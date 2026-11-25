@@ -106,6 +106,10 @@ impl Client {
         })
     }
 
+    pub fn index_name(&self) -> &str {
+        &self.index
+    }
+
     pub(crate) fn info(&self) -> Result<Info> {
         let root = self.get("")?;
         let count = self.get(&format!("/{}/_count", self.index))?;
@@ -131,6 +135,109 @@ impl Client {
         })
     }
 
+    /// Create this index from the Loci passages and vectors, adding an integer
+    /// `bucket` field from `bucket_of(passage id)`, then merge it to one segment.
+    /// The mapping matches the comparison indexes built by `tools/fiqa.py`.
+    pub(crate) fn build_bucketed(
+        &self,
+        engine: &Engine,
+        bucket_of: impl Fn(&str) -> u32 + Sync,
+    ) -> Result<()> {
+        let long: Agent = Agent::config_builder()
+            .timeout_global(None)
+            .proxy(None)
+            .build()
+            .into();
+        let url = |route: &str| format!("{}/{}{route}", self.base, self.index);
+        long.put(url(""))
+            .header("Content-Type", "application/json")
+            .send_json(json!({
+                "settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "-1"},
+                "mappings": {"dynamic": "strict", "_source": {"excludes": ["embedding"]}, "properties": {
+                    "text": {"type": "text", "analyzer": "standard", "fields": {
+                        "english": {"type": "text", "analyzer": "english"}}},
+                    "embedding": {"type": "dense_vector", "dims": engine.manifest.embedding.dimensions,
+                        "similarity": "cosine",
+                        "index_options": {"type": "hnsw", "m": 16, "ef_construction": 100}},
+                    "passage_id": {"type": "keyword"},
+                    "bucket": {"type": "integer"}
+                }}
+            }))
+            .with_context(|| format!("create index {}", self.index))?;
+        let conn = engine.conn.get()?;
+        let mut statement = conn.prepare("SELECT rowid, id, text FROM artifacts ORDER BY rowid")?;
+        let mut rows = statement.query([])?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+        let receiver = std::sync::Mutex::new(receiver);
+        std::thread::scope(|scope| -> Result<()> {
+            let workers = (0..4)
+                .map(|_| {
+                    scope.spawn(|| -> Result<()> {
+                        loop {
+                            let Ok(body) = receiver.lock().expect("bulk queue").recv() else {
+                                return Ok(());
+                            };
+                            let mut response = long
+                                .post(url("/_bulk"))
+                                .header("Content-Type", "application/x-ndjson")
+                                .send(&body[..])?;
+                            let result: Value = response.body_mut().read_json()?;
+                            ensure!(
+                                result["errors"] == Value::Bool(false),
+                                "bulk indexing failed: {}",
+                                result["items"]
+                                    .as_array()
+                                    .and_then(|items| items
+                                        .iter()
+                                        .find(|item| item["index"]["error"].is_object()))
+                                    .unwrap_or(&Value::Null)
+                            );
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut batch = Vec::new();
+            let mut count = 0;
+            while let Some(row) = rows.next()? {
+                let rowid: usize = row.get(0)?;
+                let id: String = row.get(1)?;
+                let text: String = row.get(2)?;
+                serde_json::to_writer(&mut batch, &json!({"index": {"_id": id}}))?;
+                batch.push(b'\n');
+                serde_json::to_writer(
+                    &mut batch,
+                    &json!({"passage_id": id, "text": text, "bucket": bucket_of(&id),
+                        "embedding": engine.vectors[rowid]}),
+                )?;
+                batch.push(b'\n');
+                count += 1;
+                if count % 400 == 0 {
+                    sender.send(std::mem::take(&mut batch))?;
+                    if count % 50_000 == 0 {
+                        eprintln!("Submitted {count} passages");
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                sender.send(batch)?;
+            }
+            drop(sender);
+            for worker in workers {
+                worker.join().expect("bulk worker panicked")?;
+            }
+            Ok(())
+        })?;
+        eprintln!("Refreshing and merging to one segment");
+        long.post(url("/_refresh")).send_empty()?;
+        long.post(url("/_forcemerge?max_num_segments=1"))
+            .send_empty()?;
+        long.put(url("/_settings"))
+            .header("Content-Type", "application/json")
+            .send_json(json!({"index": {"refresh_interval": "1s"}}))?;
+        long.post(url("/_refresh")).send_empty()?;
+        Ok(())
+    }
+
     fn get(&self, route: &str) -> Result<Value> {
         Ok(self
             .agent
@@ -151,7 +258,21 @@ impl Client {
         if engine.manifest.retrieval_profile == Some(RetrievalProfile::Palace) {
             return self.native_hybrid(engine, query, &vector, config, options);
         }
-        let values = self.rankings(engine, query, &vector, config.depth, options)?;
+        let values = self.rankings(engine, query, &vector, config.depth, options, None)?;
+        ranking::search_external(engine, query, &vector, config, values)
+    }
+
+    /// BM25 and kNN lists restricted by an Elasticsearch filter clause, reranked by Loci.
+    pub(crate) fn search_filtered(
+        &self,
+        engine: &Engine,
+        query: &Query,
+        config: &SearchConfig,
+        options: Options,
+        filter: &Value,
+    ) -> Result<SearchResult> {
+        let vector = engine.query_vector(query)?;
+        let values = self.rankings(engine, query, &vector, config.depth, options, Some(filter))?;
         ranking::search_external(engine, query, &vector, config, values)
     }
 
@@ -237,20 +358,30 @@ impl Client {
         vector: &[f32],
         depth: usize,
         options: Options,
+        filter: Option<&Value>,
     ) -> Result<Lists> {
         let field = match options.analyzer {
             Analyzer::Standard => "text",
             Analyzer::English => "text.english",
         };
+        let matched = json!({"match": {field: &query.text}});
+        let lexical_query = match filter {
+            Some(filter) => json!({"bool": {"must": matched, "filter": filter}}),
+            None => matched,
+        };
+        let mut knn = json!({"field": "embedding", "query_vector": vector, "k": depth,
+            "num_candidates": options.num_candidates});
+        if let Some(filter) = filter {
+            knn["filter"] = filter.clone();
+        }
         let lexical = json!({
             "size": depth, "track_total_hits": false, "_source": false,
-            "query": {"match": {field: &query.text}},
+            "query": lexical_query,
             "sort": [{"_score": "desc"}, {"passage_id": "asc"}]
         });
         let dense = json!({
             "size": depth, "track_total_hits": false, "_source": false,
-            "knn": {"field": "embedding", "query_vector": vector, "k": depth,
-                "num_candidates": options.num_candidates},
+            "knn": knn,
             "sort": [{"_score": "desc"}, {"passage_id": "asc"}]
         });
         let body = format!("{{}}\n{lexical}\n{{}}\n{dense}\n");

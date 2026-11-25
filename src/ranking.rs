@@ -227,7 +227,31 @@ pub(crate) fn search(
     strategy: Strategy,
     config: &SearchConfig,
 ) -> Result<SearchResult> {
-    search_with(engine, query, vector, strategy, config, None, None)
+    search_with(engine, query, vector, strategy, config, None, None, None)
+}
+
+/// Regional search restricted to the passages `allow` admits.
+pub(crate) fn search_filtered(
+    engine: &Engine,
+    query: &Query,
+    vector: &[f32],
+    config: &SearchConfig,
+    allow: &[bool],
+) -> Result<SearchResult> {
+    ensure!(
+        allow.len() == engine.ids.len(),
+        "the filter must cover every passage"
+    );
+    search_with(
+        engine,
+        query,
+        vector,
+        Strategy::Regional,
+        config,
+        None,
+        Some(allow),
+        None,
+    )
 }
 
 pub(crate) fn profile_regional(
@@ -243,6 +267,7 @@ pub(crate) fn profile_regional(
         vector,
         Strategy::Regional,
         config,
+        None,
         None,
         Some(phases),
     )
@@ -263,9 +288,11 @@ pub(crate) fn search_external(
         config,
         Some(lists),
         None,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_with(
     engine: &Engine,
     query: &Query,
@@ -273,8 +300,13 @@ fn search_with(
     strategy: Strategy,
     config: &SearchConfig,
     external: Option<Lists>,
+    allow: Option<&[bool]>,
     mut profile: Option<&mut Phases>,
 ) -> Result<SearchResult> {
+    ensure!(
+        allow.is_none() || strategy == Strategy::Regional,
+        "only regional search accepts a passage filter"
+    );
     let query_terms = terms(&query.text).collect::<BTreeSet<_>>();
     let mut work = Work::default();
     let mut expanded = Vec::new();
@@ -286,11 +318,12 @@ fn search_with(
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
         Strategy::Regional => {
-            let rescue = engine.regional_index().rescue(
+            let rescue = engine.regional_index().rescue_filtered(
                 engine,
                 &query_terms,
                 config.rescue,
                 config.rescue_max_scored,
+                allow,
             )?;
             work.global_rescue_chunks_scored = rescue.scores.as_ref().map(|scores| scores.count);
             work.global_rescue_budget_hit = config.rescue_max_scored.map(|_| rescue.budget_hit);
@@ -354,6 +387,7 @@ fn search_with(
                 config,
                 &weights,
                 rescue_scores.as_ref(),
+                allow,
                 &mut work,
                 &mut profile,
             );
@@ -369,7 +403,11 @@ fn search_with(
                 let (graph, comparisons) = engine.nearest_dense(vector, count, config.graph_width);
                 work.graph_vector_comparisons = Some(comparisons);
                 let regional = nearest.iter().map(|hit| hit.id).collect::<HashSet<_>>();
-                for (rank, hit) in graph.into_iter().enumerate() {
+                // A filtered search keeps only admitted graph neighbours (post-filtering).
+                let graph = graph
+                    .into_iter()
+                    .filter(|hit| allow.is_none_or(|allow| allow[hit.id]));
+                for (rank, hit) in graph.enumerate() {
                     graph_ranks.insert(hit.id, rank + 1);
                     if !regional.contains(&hit.id) {
                         nearest.push(hit);

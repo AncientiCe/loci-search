@@ -69,6 +69,7 @@ pub(super) fn rescue(
     norms: &[f64],
     limit: usize,
     budget: usize,
+    allow: Option<&[bool]>,
 ) -> LexicalRescue {
     let mut cursors = terms
         .iter()
@@ -109,10 +110,20 @@ pub(super) fn rescue(
         else {
             break false;
         };
+        let id = candidate as usize;
+        if allow.is_some_and(|allow| !allow[id]) {
+            // Excluded passages consume no budget; step every essential list past them.
+            for &i in &by_bound[essential..] {
+                let cursor = &mut cursors[i];
+                if cursor.head() == Some(candidate) {
+                    cursor.remaining = &cursor.remaining[1..];
+                }
+            }
+            continue;
+        }
         if count == budget {
             break true;
         }
-        let id = candidate as usize;
         contributions.fill(0.0);
         let mut partial = 0.0;
         for &i in &by_bound[essential..] {

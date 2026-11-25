@@ -637,6 +637,23 @@ impl Engine {
         ranking::search(self, query, &vector, strategy, config)
     }
 
+    /// Regional search over the passages `allow` admits, after [`Engine::prepare`].
+    pub(crate) fn search_filtered(
+        &self,
+        query: &Query,
+        config: &SearchConfig,
+        allow: &[bool],
+    ) -> Result<SearchResult> {
+        config.validate()?;
+        ensure!(
+            self.regional.is_some()
+                && (config.graph_candidates.is_none() || self.dense_graph.is_some()),
+            "prepare the engine for regional search before a filtered search"
+        );
+        let vector = self.query_vector(query)?;
+        ranking::search_filtered(self, query, &vector, config, allow)
+    }
+
     pub(crate) fn profile_regional(
         &mut self,
         query: &Query,

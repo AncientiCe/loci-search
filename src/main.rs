@@ -88,6 +88,34 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Build an Elasticsearch comparison index whose passages carry a hash bucket field.
+    ElasticBuckets {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        elastic_url: String,
+        #[arg(long)]
+        index: String,
+    },
+    /// Compare filtered Loci and Elasticsearch with an exhaustive filtered top 100.
+    FilterDev {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        dev: PathBuf,
+        #[arg(long)]
+        frozen_report: PathBuf,
+        #[arg(long)]
+        elastic_url: Option<String>,
+        /// Index built by `elastic-buckets`.
+        #[arg(long, requires = "elastic_url")]
+        elastic_index: Option<String>,
+        /// Fractions of the corpus a filter admits.
+        #[arg(long, value_delimiter = ',', default_value = "0.001,0.01,0.1,0.5")]
+        selectivities: Vec<f64>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Measure how much of the corpus each configuration scores against an exhaustive top 100.
     PruningDev {
         #[arg(long)]
@@ -417,6 +445,47 @@ fn main() -> Result<()> {
             let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
             let tuning = bench::tune_bounded_rescue(&mut engine, &development, &frozen)?;
             write_json(&out, &tuning)?;
+        }
+        Command::ElasticBuckets {
+            db,
+            elastic_url,
+            index,
+        } => {
+            let engine = Engine::open(&db)?;
+            let client = loci_search::elastic::Client::new(&elastic_url, &index)?;
+            let started = std::time::Instant::now();
+            bench::build_elastic_buckets(&engine, &client)?;
+            print_json(&serde_json::json!({
+                "index": index,
+                "documents": engine.manifest.chunks,
+                "build_seconds": started.elapsed().as_secs_f64(),
+            }))?;
+        }
+        Command::FilterDev {
+            db,
+            dev,
+            frozen_report,
+            elastic_url,
+            elastic_index,
+            selectivities,
+            out,
+        } => {
+            let mut engine = Engine::open(&db)?;
+            let development = jsonl::<Query>(&dev)?;
+            let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            let client = match (elastic_url, elastic_index) {
+                (Some(url), Some(index)) => Some(loci_search::elastic::Client::new(&url, &index)?),
+                (None, None) => None,
+                _ => anyhow::bail!("--elastic-url and --elastic-index go together"),
+            };
+            let report = bench::filter_dev(
+                &mut engine,
+                &development,
+                &frozen,
+                client.as_ref(),
+                &selectivities,
+            )?;
+            write_json(&out, &report)?;
         }
         Command::PruningDev {
             db,

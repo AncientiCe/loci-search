@@ -113,6 +113,7 @@ pub(crate) fn exhaustive(
     vector: &[f32],
     objective: &Objective<'_>,
     k: usize,
+    allow: Option<&[bool]>,
 ) -> Vec<Scored> {
     let index = engine.regional_index();
     let total = objective.total();
@@ -132,6 +133,7 @@ pub(crate) fn exhaustive(
         .iter()
         .zip(matched)
         .enumerate()
+        .filter(|(id, _)| allow.is_none_or(|allow| allow[*id]))
         .map(|(id, (candidate, matched))| Scored {
             id,
             score: objective.rerank.score(
@@ -254,4 +256,31 @@ pub(crate) fn branch_and_bound(
         inside_cone,
         stop_reason,
     }
+}
+
+/// Score only `ids` and return the best `k`, best first: a filtered brute force.
+pub(crate) fn exhaustive_over(
+    engine: &Engine,
+    vector: &[f32],
+    objective: &Objective<'_>,
+    k: usize,
+    ids: &[usize],
+) -> Vec<Scored> {
+    let total = objective.total();
+    let mut best = BinaryHeap::<Reverse<Scored>>::with_capacity(k + 1);
+    for &id in ids {
+        let candidate = Scored {
+            id,
+            score: objective.score(engine, vector, id, total),
+        };
+        if best.len() < k {
+            best.push(Reverse(candidate));
+        } else if best.peek().is_some_and(|kth| candidate > kth.0) {
+            best.pop();
+            best.push(Reverse(candidate));
+        }
+    }
+    let mut top = best.into_iter().map(|entry| entry.0).collect::<Vec<_>>();
+    top.sort_unstable_by(|a, b| b.cmp(a));
+    top
 }

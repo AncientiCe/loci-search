@@ -173,12 +173,25 @@ impl RegionalIndex {
         self.scratch.lock().expect("regional scratch").push(scratch);
     }
 
+    #[cfg(test)]
     pub fn rescue(
         &self,
         engine: &Engine,
         terms: &BTreeSet<String>,
         limit: usize,
         max_scored: Option<usize>,
+    ) -> Result<LexicalRescue> {
+        self.rescue_filtered(engine, terms, limit, max_scored, None)
+    }
+
+    /// Global lexical rescue over the passages `allow` admits (all when `None`).
+    pub fn rescue_filtered(
+        &self,
+        engine: &Engine,
+        terms: &BTreeSet<String>,
+        limit: usize,
+        max_scored: Option<usize>,
+        allow: Option<&[bool]>,
     ) -> Result<LexicalRescue> {
         if terms.is_empty() || limit == 0 {
             return Ok(LexicalRescue {
@@ -189,7 +202,7 @@ impl RegionalIndex {
         }
         if !self.fts5_compatible || terms.iter().any(|term| term.len() > FTS5_TOKEN_BYTES) {
             anyhow::ensure!(
-                max_scored.is_none(),
+                max_scored.is_none() && allow.is_none(),
                 "bounded rescue requires the in-memory lexical index"
             );
             return Ok(LexicalRescue {
@@ -213,6 +226,7 @@ impl RegionalIndex {
                 &self.rescue_norms,
                 limit,
                 budget,
+                allow,
             ));
         }
         let mut scores = vec![0.0; self.rescue_norms.len()];
@@ -220,6 +234,9 @@ impl RegionalIndex {
         for (postings, idf) in query_terms {
             for posting in &postings.documents {
                 let id = posting.id as usize;
+                if allow.is_some_and(|allow| !allow[id]) {
+                    continue;
+                }
                 scores[id] += idf * rescue_impact(posting.frequency, self.rescue_norms[id]);
             }
         }
@@ -324,12 +341,14 @@ pub(crate) struct Selection {
     pub stop_reason: &'static str,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn select(
     engine: &Engine,
     vector: &[f32],
     config: &SearchConfig,
     weights: &BTreeMap<String, f64>,
     rescue_scores: Option<&RescueScores>,
+    allow: Option<&[bool]>,
     work: &mut Work,
     profile: &mut Option<&mut Phases>,
 ) -> Selection {
@@ -387,6 +406,9 @@ pub(crate) fn select(
                 break 'routing "routing_time";
             }
             visit.scanned = offset + 1;
+            if allow.is_some_and(|allow| !allow[id]) {
+                continue;
+            }
             if first_visit[id] == UNVISITED && nearest.len() < config.max_chunks {
                 first_visit[id] = visit_number;
                 if rescue_scores.is_some_and(|rescue| !rescue.contains(id)) {
@@ -594,7 +616,7 @@ mod tests {
                     weights: &weights,
                     rerank,
                 };
-                let exhaustive = bound::exhaustive(&engine, &vector, &objective, 20);
+                let exhaustive = bound::exhaustive(&engine, &vector, &objective, 20, None);
                 let pruned = bound::branch_and_bound(
                     &engine, &cones, &vector, &objective, 20, 1.0, &mut seen,
                 );
@@ -609,6 +631,71 @@ mod tests {
             pruned_any,
             "the bound never skipped a passage on the fixture"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn filtered_search_returns_only_admitted_passages() -> Result<()> {
+        use crate::ranking::{RegionalRerank, SearchConfig, Strategy, coverage_weights};
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("filtered.sqlite");
+        let (embedding, corpus, queries) = fixture::generate(2_000)?;
+        index::ingest(&db, corpus, embedding, 64)?;
+        let mut engine = Engine::open(&db)?;
+        let rerank = RegionalRerank {
+            coverage: 0.08,
+            cosine: 0.92,
+            fusion: 0.0,
+        };
+        let config = SearchConfig {
+            limit: 20,
+            depth: 40,
+            max_regions: 64,
+            max_chunks: 2_000,
+            max_postings: 1_000_000,
+            rescue: 10,
+            rescue_max_scored: Some(2_000),
+            regional_rerank: Some(rerank),
+            ..SearchConfig::default()
+        };
+        engine.prepare(Strategy::Regional, &config)?;
+        let allow = (0..engine.ids.len())
+            .map(|id| id % 7 == 0)
+            .collect::<Vec<_>>();
+        let admitted = (0..engine.ids.len())
+            .filter(|&id| allow[id])
+            .collect::<Vec<_>>();
+        for query in queries.iter().take(8) {
+            let result = engine.search_filtered(query, &config, &allow)?;
+            assert!(!result.hits.is_empty());
+            for hit in &result.hits {
+                let row = engine
+                    .ids
+                    .iter()
+                    .position(|id| *id == hit.source.id)
+                    .unwrap();
+                assert!(allow[row], "hit {} is outside the filter", hit.source.id);
+            }
+            let tokens = terms(&query.text).collect::<BTreeSet<_>>();
+            let rescue = engine.regional_index().rescue_filtered(
+                &engine,
+                &tokens,
+                10,
+                Some(2_000),
+                Some(&allow),
+            )?;
+            assert!(rescue.ranked.iter().all(|&id| allow[id]));
+            let vector = engine.query_vector(query)?;
+            let weights = coverage_weights(&engine, &tokens)?;
+            let objective = bound::Objective {
+                weights: &weights,
+                rerank,
+            };
+            let scanned = bound::exhaustive(&engine, &vector, &objective, 20, Some(&allow));
+            let listed = bound::exhaustive_over(&engine, &vector, &objective, 20, &admitted);
+            let ids = |hits: &[bound::Scored]| hits.iter().map(|hit| hit.id).collect::<Vec<_>>();
+            assert_eq!(ids(&scanned), ids(&listed));
+        }
         Ok(())
     }
 

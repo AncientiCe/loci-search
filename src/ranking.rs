@@ -356,8 +356,7 @@ fn search_with(
     let mut stop_reason = "complete";
     let mut rescue_scores = None;
     let mut graph_ranks = HashMap::new();
-    // Hybrid search runs the graph first: its neighbours seed the keyword search's
-    // threshold, so MaxScore can skip common terms from the start.
+    // Hybrid search's candidate lists: the graph neighbours, then the keyword rescue.
     let mut hybrid_nearest = None;
     if strategy == Strategy::Hybrid {
         let count = config
@@ -379,10 +378,6 @@ fn search_with(
         timer.finish(&mut profile);
         hybrid_nearest = Some(nearest);
     }
-    let seeds = hybrid_nearest
-        .as_ref()
-        .map(|nearest| nearest.iter().map(|hit| hit.id).collect::<Vec<_>>())
-        .unwrap_or_default();
     let timer = Timer::start(&profile, "rescue");
     let global_lexical = match strategy {
         Strategy::Bm25 | Strategy::Global => engine.lexical(&query_terms, config.depth)?,
@@ -393,7 +388,6 @@ fn search_with(
                 config.rescue,
                 config.rescue_max_scored,
                 allow,
-                &seeds,
             )?;
             work.global_rescue_chunks_scored = rescue.scores.as_ref().map(|scores| scores.count);
             work.global_rescue_budget_hit = config.rescue_max_scored.map(|_| rescue.budget_hit);

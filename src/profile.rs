@@ -210,7 +210,8 @@ pub fn run(
             p95_ms: percentile(&mut values, 0.95),
         })
         .collect();
-    let buckets: [(&'static str, fn(usize) -> bool); 4] = [
+    type Bucket = (&'static str, fn(usize) -> bool);
+    let buckets: [Bucket; 4] = [
         ("1-8", |n| n <= 8),
         ("9-12", |n| (9..=12).contains(&n)),
         ("13-16", |n| (13..=16).contains(&n)),

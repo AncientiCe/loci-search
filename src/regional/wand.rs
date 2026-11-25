@@ -70,7 +70,6 @@ pub(super) fn rescue(
     limit: usize,
     budget: usize,
     allow: Option<&[bool]>,
-    seeds: &[usize],
 ) -> LexicalRescue {
     let mut cursors = terms
         .iter()
@@ -92,49 +91,6 @@ pub(super) fn rescue(
     let mut best = BinaryHeap::<Reverse<Ranked>>::new();
     let mut scored = Vec::new();
     let mut count = 0;
-    // Start the heap with the exact scores of known candidates (for example the vector
-    // graph's neighbours) so the threshold, and pruning, start near their final level.
-    // A seed's score is a true BM25 score, so the threshold never exceeds the k-th best.
-    let mut seeded = seeds
-        .iter()
-        .filter(|&&id| allow.is_none_or(|allow| allow[id]))
-        .filter_map(|&id| u32::try_from(id).ok())
-        .collect::<Vec<_>>();
-    seeded.sort_unstable();
-    seeded.dedup();
-    seeded.truncate(budget);
-    let mut seeded_scored = Vec::new();
-    for &candidate in &seeded {
-        let id = candidate as usize;
-        let mut matched = false;
-        // Sum in query term order, as the dense scorer does; absent terms add zero.
-        let score = terms
-            .iter()
-            .map(|(postings, idf)| {
-                match postings
-                    .documents
-                    .binary_search_by_key(&candidate, |posting| posting.id)
-                {
-                    Ok(at) => {
-                        matched = true;
-                        idf * rescue_impact(postings.documents[at].frequency, norms[id])
-                    }
-                    Err(_) => 0.0,
-                }
-            })
-            .sum::<f64>();
-        if !matched {
-            continue;
-        }
-        count += 1;
-        seeded_scored.push(candidate);
-        let ranked = Ranked { id, score };
-        if best.len() < limit {
-            best.push(Reverse(ranked));
-        } else if ranked > best.peek().expect("full heap").0 {
-            *best.peek_mut().expect("full heap") = Reverse(ranked);
-        }
-    }
 
     let budget_hit = 'candidates: loop {
         let threshold = if best.len() == limit {
@@ -155,9 +111,8 @@ pub(super) fn rescue(
             break false;
         };
         let id = candidate as usize;
-        if allow.is_some_and(|allow| !allow[id]) || seeded.binary_search(&candidate).is_ok() {
-            // Excluded passages consume no budget, and seeds are already scored;
-            // step every essential list past them.
+        if allow.is_some_and(|allow| !allow[id]) {
+            // Excluded passages consume no budget; step every essential list past them.
             for &i in &by_bound[essential..] {
                 let cursor = &mut cursors[i];
                 if cursor.head() == Some(candidate) {
@@ -206,11 +161,6 @@ pub(super) fn rescue(
             *best.peek_mut().expect("full heap") = Reverse(ranked);
         }
     };
-    // Candidates arrived in ascending id order; merge in the seeds to keep `scored` sorted.
-    if !seeded_scored.is_empty() {
-        scored.extend(seeded_scored);
-        scored.sort_unstable();
-    }
     let ranked = best
         .into_sorted_vec()
         .into_iter()

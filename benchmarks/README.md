@@ -75,7 +75,25 @@ At equal quality, Loci's raw-text p95 is 25.6% lower than Elasticsearch's, which
 
 Queries per second at 16 clients: raw text 377.3 and 367.3 for Loci against 259.9 and 258.5 for Elasticsearch; precomputed vectors 1,357.8 against 560.4. Loci led at every concurrency in every run.
 
-The VM paged memory to swap during both raw-text runs although memory was available. In run A it paged 1.8 GB of Elasticsearch's Java heap; in run B, with `bootstrap.memory_lock`, it paged about 200 MB of the Loci server and part of the benchmark client instead. The precomputed-vector run saw almost no swap-ins. Over HTTP, the raw-text p95 lead is therefore about 20%, on the edge of the target, and the engine-only lead is about 31%. This is one corpus.
+The VM paged memory to swap during both raw-text runs although memory was available. In run A it paged 1.8 GB of Elasticsearch's Java heap; in run B, with `bootstrap.memory_lock`, it paged about 200 MB of the Loci server and part of the benchmark client instead. The precomputed-vector run saw almost no swap-ins.
+
+### Hybrid search over HTTP, without swap
+
+`Strategy::Hybrid` runs the same graph, rescue, and reranker without the regional scan and loads a lean index without per-region postings or int8 vectors. The hybrid server held 2.6 GiB against 4.4 GiB for regional search with budgets of 1, so this run swapped out 70 pages and swapped none back in. Elasticsearch kept its heap locked. Quality was identical to the runs above.
+
+| Track | Loci hybrid p50 / p95 / p99 | Elasticsearch p50 / p95 / p99 | Loci p95 vs Elasticsearch |
+| --- | --- | --- | ---: |
+| Raw text, query encoding included | 16.86 / 25.35 / 29.89 ms | 23.83 / 33.78 / 38.69 ms | −25.0% |
+| Precomputed vectors | 6.73 / 13.00 / 16.17 ms | 13.33 / 20.31 / 25.32 ms | −36.0% |
+
+| Clients | Loci, raw text | Elasticsearch, raw text | Loci, vectors | Elasticsearch, vectors |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 50.4 | 37.1 | 141.2 | 71.0 |
+| 4 | 192.5 | 140.7 | 562.9 | 275.5 |
+| 8 | 310.9 | 212.6 | 1,025.0 | 464.8 |
+| 16 | 376.9 | 259.9 | 1,390.9 | 565.4 |
+
+With both engines over HTTP, equal quality, and no paging, Loci's raw-text p95 is 25% lower than Elasticsearch's, which meets the 20% target, and its engine-only p95 is 36% lower. Loci serves 1.45 times the raw-text queries per second at 16 clients and 2.5 times with precomputed vectors. This is one corpus.
 
 ## Can the topology rule regions out?
 

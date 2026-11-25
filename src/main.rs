@@ -88,6 +88,23 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Measure how much of the corpus each configuration scores against an exhaustive top 100.
+    PruningDev {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        dev: PathBuf,
+        #[arg(long)]
+        frozen_report: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Radius scales to try; 1.0 is the safe bound.
+        #[arg(long, value_delimiter = ',', default_value = "1.0,0.5,0.3,0.2,0.1,0.0")]
+        shrinks: Vec<f64>,
+        /// Skip the global rescue and graph ablations.
+        #[arg(long)]
+        bound_only: bool,
+    },
     /// Audit candidate and final ranks on development queries against frozen Elasticsearch.
     RecallDev {
         #[arg(long)]
@@ -400,6 +417,21 @@ fn main() -> Result<()> {
             let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
             let tuning = bench::tune_bounded_rescue(&mut engine, &development, &frozen)?;
             write_json(&out, &tuning)?;
+        }
+        Command::PruningDev {
+            db,
+            dev,
+            frozen_report,
+            out,
+            shrinks,
+            bound_only,
+        } => {
+            let mut engine = Engine::open(&db)?;
+            let development = jsonl::<Query>(&dev)?;
+            let frozen = json::<bench::FrozenComparison>(&frozen_report)?;
+            let report =
+                bench::pruning_dev(&mut engine, &development, &frozen, &shrinks, !bound_only)?;
+            write_json(&out, &report)?;
         }
         Command::RecallDev {
             db,

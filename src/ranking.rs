@@ -85,7 +85,7 @@ impl RegionalRerank {
         Ok(())
     }
 
-    fn score(self, coverage: f64, cosine: f64, fusion: f64) -> f64 {
+    pub(crate) fn score(self, coverage: f64, cosine: f64, fusion: f64) -> f64 {
         self.coverage * coverage + self.cosine * cosine + self.fusion * fusion * 30.0
     }
 }
@@ -306,24 +306,15 @@ fn search_with(
     };
     timer.finish(&mut profile);
     work.global_lexical_returned = global_lexical.len();
-    let mut weights = BTreeMap::new();
     let hybrid = matches!(
         strategy,
         Strategy::Regional | Strategy::Global | Strategy::Elasticsearch
     );
-    if hybrid {
-        let conn = engine.conn.get()?;
-        let mut df = conn.prepare_cached("SELECT df FROM term_stats WHERE term=?")?;
-        for term in &query_terms {
-            let count = df
-                .query_row([term], |row| row.get::<_, usize>(0))
-                .optional()?
-                .unwrap_or(0);
-            let idf =
-                (1.0 + (engine.ids.len() as f64 - count as f64 + 0.5) / (count as f64 + 0.5)).ln();
-            weights.insert(term.clone(), idf);
-        }
-    }
+    let weights = if hybrid {
+        coverage_weights(engine, &query_terms)?
+    } else {
+        BTreeMap::new()
+    };
     let mut candidates = BTreeMap::<usize, Candidate>::new();
     for (rank, &id) in global_lexical.iter().enumerate() {
         let candidate = candidates.entry(id).or_default();
@@ -538,6 +529,26 @@ fn search_with(
         stop_reason,
         work,
     })
+}
+
+/// IDF weight of each query term, used by the reranker's term coverage.
+pub(crate) fn coverage_weights(
+    engine: &Engine,
+    query_terms: &BTreeSet<String>,
+) -> Result<BTreeMap<String, f64>> {
+    let mut weights = BTreeMap::new();
+    let conn = engine.conn.get()?;
+    let mut df = conn.prepare_cached("SELECT df FROM term_stats WHERE term=?")?;
+    for term in query_terms {
+        let count = df
+            .query_row([term], |row| row.get::<_, usize>(0))
+            .optional()?
+            .unwrap_or(0);
+        let idf =
+            (1.0 + (engine.ids.len() as f64 - count as f64 + 0.5) / (count as f64 + 0.5)).ln();
+        weights.insert(term.clone(), idf);
+    }
+    Ok(weights)
 }
 
 /// What a Palace-ranked hit reports about how retrieval reached it.

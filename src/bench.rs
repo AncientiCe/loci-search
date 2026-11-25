@@ -13,7 +13,9 @@ use std::{
     time::Instant,
 };
 
+mod pruning;
 mod recall;
+pub use pruning::{PruningReport, pruning_dev};
 pub use recall::{diagnose_recall, tune_bounded_rescue, tune_regional_rerank};
 
 const STRATEGIES: [Strategy; 3] = [Strategy::Bm25, Strategy::Global, Strategy::Regional];

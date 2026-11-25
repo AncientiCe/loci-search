@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod bound;
 mod quantized;
 mod wand;
 
@@ -251,6 +252,13 @@ impl RegionalIndex {
             })
             .sum::<usize>()
             + (self.rescue_norms.capacity() + self.regional_norms.capacity()) * size_of::<f64>()
+    }
+
+    /// Passages containing `term`.
+    pub fn document_frequency(&self, term: &str) -> usize {
+        self.postings
+            .get(term)
+            .map_or(0, |postings| postings.documents.len())
     }
 
     pub fn coverage(&self, id: usize, weights: &BTreeMap<String, f64>) -> f64 {
@@ -552,6 +560,55 @@ mod tests {
                 assert!(capped.scores.unwrap().count <= 4);
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn safe_branch_and_bound_returns_the_exhaustive_top_k() -> Result<()> {
+        use crate::ranking::{RegionalRerank, coverage_weights};
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("bound.sqlite");
+        let (embedding, corpus, queries) = fixture::generate(2_000)?;
+        index::ingest(&db, corpus, embedding, 64)?;
+        let mut engine = Engine::open(&db)?;
+        engine.prepare_regional()?;
+        let cones = bound::Cones::build(&engine);
+        let mut seen = vec![false; engine.ids.len()];
+        let mut pruned_any = false;
+        for query in queries.iter().take(16) {
+            let vector = engine.query_vector(query)?;
+            let weights = coverage_weights(&engine, &terms(&query.text).collect())?;
+            for rerank in [
+                RegionalRerank {
+                    coverage: 0.08,
+                    cosine: 0.92,
+                    fusion: 0.0,
+                },
+                RegionalRerank {
+                    coverage: 0.0,
+                    cosine: 1.0,
+                    fusion: 0.0,
+                },
+            ] {
+                let objective = bound::Objective {
+                    weights: &weights,
+                    rerank,
+                };
+                let exhaustive = bound::exhaustive(&engine, &vector, &objective, 20);
+                let pruned = bound::branch_and_bound(
+                    &engine, &cones, &vector, &objective, 20, 1.0, &mut seen,
+                );
+                let ids =
+                    |hits: &[bound::Scored]| hits.iter().map(|hit| hit.id).collect::<Vec<_>>();
+                assert_eq!(ids(&pruned.top), ids(&exhaustive));
+                pruned_any |= pruned.scored < engine.ids.len();
+                assert!(seen.iter().all(|&flag| !flag));
+            }
+        }
+        assert!(
+            pruned_any,
+            "the bound never skipped a passage on the fixture"
+        );
         Ok(())
     }
 

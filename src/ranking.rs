@@ -48,6 +48,10 @@ pub struct SearchConfig {
     pub routing_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regional_rerank: Option<RegionalRerank>,
+    /// Reranker weights for Elasticsearch candidate lists. Unset keeps the default,
+    /// so a control can give Elasticsearch the same reranker as regional search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elastic_rerank: Option<RegionalRerank>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -102,6 +106,7 @@ impl Default for SearchConfig {
             graph_candidates: None,
             routing_ms: 0,
             regional_rerank: None,
+            elastic_rerank: None,
         }
     }
 }
@@ -142,7 +147,7 @@ impl SearchConfig {
             self.graph_candidates.is_none_or(|count| count > 0),
             "graph candidates must be positive"
         );
-        if let Some(weights) = self.regional_rerank {
+        for weights in [self.regional_rerank, self.elastic_rerank].into_iter().flatten() {
             weights.validate()?;
         }
         Ok(())
@@ -457,10 +462,10 @@ fn search_with(
         });
     }
     let total_weight = weights.values().sum::<f64>().max(f64::EPSILON);
-    let rerank = if strategy == Strategy::Regional {
-        config.regional_rerank.unwrap_or_default()
-    } else {
-        RegionalRerank::default()
+    let rerank = match strategy {
+        Strategy::Regional => config.regional_rerank.unwrap_or_default(),
+        Strategy::Elasticsearch => config.elastic_rerank.unwrap_or_default(),
+        _ => RegionalRerank::default(),
     };
     let timer = Timer::start(&profile, "rerank");
     let mut reranked = Vec::with_capacity(fused.len());

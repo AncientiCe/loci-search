@@ -320,6 +320,7 @@ impl From<Settings> for SearchConfig {
             graph_candidates: None,
             routing_ms: settings.routing_ms,
             regional_rerank: None,
+            elastic_rerank: None,
         }
     }
 }

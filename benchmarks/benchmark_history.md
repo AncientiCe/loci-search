@@ -128,6 +128,31 @@ Hybrid search's 92% cosine reranker could drop an exact code whose embedding poi
 
 Loci minus Elasticsearch: nDCG@10 −0.0011 (95% interval −0.0049 to +0.0014), Recall@100 −0.21 points (−0.84 to +0.42). The identifier weights lowered nDCG@10 on that one query for both engines, and the comparison is unchanged: tied quality, 72% lower p95, and 5.8 times the queries per second.
 
+### Keyword search on the rarest terms
+
+`loci profile` on the 250 HotpotQA development queries showed where hybrid search spent its time: 7.33 ms mean and 15.78 ms p95 in total, of which the keyword rescue took 3.88 ms mean and 11.32 ms p95. Questions with 17 or more distinct terms averaged 6.30 ms of rescue, against 0.77 to 2.27 ms for shorter ones.
+
+Seeding MaxScore's heap with the exact BM25 scores of the graph neighbours, so pruning would start from a high threshold, returned identical results and no speedup: rescue 4.14 ms mean, 11.35 ms p95. Vector neighbours score modestly on BM25, so the seeded threshold stayed far below the final 60th score. The seeding was removed.
+
+Running the rescue on only the query terms found in the fewest passages worked. On development queries, with reranker coverage still over every term:
+
+| HotpotQA 1M, 250 dev | Recall@100 | nDCG@10 | p50 | p95 |
+| --- | ---: | ---: | ---: | ---: |
+| All terms | 92.20% | 0.8386 | 5.57 ms | 13.78 ms |
+| Rarest 16 terms | 92.20% | 0.8386 | 5.09 ms | 7.71 ms |
+| Rarest 12 terms | 92.00% | 0.8386 | 4.58 ms | 6.22 ms |
+| Rarest 8 terms | 92.00% | 0.8386 | 3.80 ms | 4.87 ms |
+
+FiQA development quality was identical with 8 terms (74.67% Recall@100, 0.4608 nDCG@10) and p95 fell from 2.86 to 2.48 ms. The standing rule chose 8 terms, and `SearchConfig::hybrid` now uses them. The held-out runs on Linux, with both engines over HTTP and Elasticsearch's heap locked, swapped nothing back in:
+
+| Track | Loci Recall@100 / nDCG@10 | Elasticsearch Recall@100 / nDCG@10 | Loci p50 / p95 | Elasticsearch p50 / p95 | Queries per second at 16 clients |
+| --- | --- | --- | --- | --- | --- |
+| HotpotQA 1M, raw text | 91.09% / 0.8236 | 90.63% / 0.8225 | 15.74 / 19.18 ms | 24.63 / 34.33 ms | 429.2 / 275.6 |
+| HotpotQA 1M, precomputed vectors | 91.09% / 0.8236 | 90.63% / 0.8225 | 5.47 / 6.89 ms | 13.69 / 20.36 ms | 1,875.5 / 406.6 |
+| FiQA, precomputed vectors | 74.00% / 0.4242 | 74.21% / 0.4253 | 3.11 / 3.91 ms | 14.29 / 15.67 ms | 2,629.3 / 396.1 |
+
+Held-out HotpotQA Recall@100 rose 0.31 points over the all-terms run, and no Loci minus Elasticsearch difference is significant (HotpotQA nDCG@10 +0.0011, −0.0035 to +0.0060; Recall@100 +0.47 points, −0.31 to +1.25). The p95 lead grew from 25% to 44% on raw text and from 36% to 66% with precomputed vectors on HotpotQA, and to 75% on FiQA. The phase 3 target, a search-only development p95 at or below 10 ms, was met at 4.87 ms.
+
 ## Can the topology rule regions out?
 
 `loci pruning-dev` scores all one million HotpotQA passages with the regional reranker (92% cosine, 8% term coverage) and compares each plan's top 100 with that exhaustive top 100. The 250 development queries used precomputed vectors on Windows, so the timings compare rows only.

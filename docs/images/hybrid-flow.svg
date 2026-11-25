@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" width="960" height="330" role="img" aria-labelledby="title desc">
 <title id="title">Hybrid search query path</title>
-<desc id="desc">A query runs a BM25 keyword search over in-memory postings for the top 60 passages and an HNSW graph search for the 150 nearest neighbours. Reciprocal rank fusion keeps 200 candidates, and a reranker weighted 92% cosine similarity and 8% term coverage returns the top hits with their document, revision, and source span.</desc>
+<desc id="desc">A query runs a BM25 keyword search on its 8 rarest terms for the top 60 passages and an HNSW graph search for the 150 nearest neighbours. Reciprocal rank fusion keeps 200 candidates, and a reranker weighted 92% cosine similarity and 8% term coverage returns the top hits with their document, revision, and source span.</desc>
 <style>
   svg { --bg:#fcfcfb; --t1:#0b0b0b; --t2:#52514e; --t3:#77766f; --grid:#e4e3df; --line:#c9c8c2; --s1:#2a78d6; --s2:#eb6834; --box:#f3f2ef; }
   @media (prefers-color-scheme: dark) {
@@ -28,7 +28,7 @@
 <text class="t1 ttl" x="28" y="42">How a hybrid search runs</text>
 <text class="t2 sub" x="28" y="64">Two global candidate lists, one fusion step, one reranker. Every hit keeps its document, revision, and source span.</text><rect class="box" x="28" y="140" width="150" height="86" rx="10"/>
 <text class="t1 h" x="42" y="164">Query</text><text class="t2 s" x="42" y="184">text in, or a vector</text><text class="t2 s" x="42" y="201">from any model</text><rect class="accent" x="232" y="92" width="200" height="86" rx="10"/>
-<text class="t1 h" x="246" y="116">Keyword search</text><text class="t2 s" x="246" y="136">BM25 with MaxScore</text><text class="t2 s" x="246" y="153">over in-memory postings</text><text class="t2 s" x="246" y="170">top 60 passages</text><rect class="accent" x="232" y="196" width="200" height="86" rx="10"/>
+<text class="t1 h" x="246" y="116">Keyword search</text><text class="t2 s" x="246" y="136">BM25 with MaxScore</text><text class="t2 s" x="246" y="153">on the 8 rarest terms</text><text class="t2 s" x="246" y="170">top 60 passages</text><rect class="accent" x="232" y="196" width="200" height="86" rx="10"/>
 <text class="t1 h" x="246" y="220">HNSW graph</text><text class="t2 s" x="246" y="240">150 nearest neighbours</text><text class="t2 s" x="246" y="257">search width 128</text><text class="t2 s" x="246" y="274">saved beside the index</text><rect class="box" x="486" y="140" width="190" height="86" rx="10"/>
 <text class="t1 h" x="500" y="164">Fuse</text><text class="t2 s" x="500" y="184">reciprocal rank fusion</text><text class="t2 s" x="500" y="201">200 candidates, keyword</text><text class="t2 s" x="500" y="218">hits keep their slots</text><rect class="accent" x="730" y="140" width="202" height="86" rx="10"/>
 <text class="t1 h" x="744" y="164">Rerank</text><text class="t2 s" x="744" y="184">92% cosine similarity</text><text class="t2 s" x="744" y="201">8% IDF term coverage</text><text class="t2 s" x="744" y="218">top k with citations</text><path class="arrow" d="M178 183 C205 183 205 135 232 135"/>

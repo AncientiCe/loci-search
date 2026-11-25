@@ -7,7 +7,7 @@
 [![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: research preview](https://img.shields.io/badge/status-research%20preview-lightgrey.svg)
 
-![Loci Search: self-hosted hybrid search in Rust. Against Elasticsearch 8.19, retrieval quality is tied, p95 latency is 25% lower on HotpotQA 1M and 72% lower on FiQA, and throughput is 5.8 times higher on FiQA at 16 clients.](docs/images/hero.svg)
+![Loci Search: self-hosted hybrid search in Rust. Against Elasticsearch 8.19, retrieval quality is tied, p95 latency is 44% lower on HotpotQA 1M and 75% lower on FiQA, and throughput is 6.6 times higher on FiQA at 16 clients.](docs/images/hero.svg)
 
 Loci Search is a self-hosted search engine and Rust library. It keeps documents in SQLite, searches them with a keyword index and a vector graph, and returns each hit with its document, revision, and source span. On two public retrieval benchmarks it finds the same results as Elasticsearch and answers faster.
 
@@ -17,26 +17,26 @@ Loci Search is a self-hosted search engine and Rust library. It keeps documents 
 
 Both engines ran on the same Linux machine, answered over HTTP, used identical vectors and the same reranker, and were measured on held-out queries after their settings were frozen on development queries.
 
-![p95 latency at equal quality. HotpotQA 1M raw text: Loci 25.4 ms, Elasticsearch 33.8 ms. HotpotQA 1M precomputed vectors: Loci 13.0 ms, Elasticsearch 20.3 ms. FiQA: Loci 4.7 ms, Elasticsearch 17.0 ms.](docs/images/latency.svg)
+![p95 latency at equal quality. HotpotQA 1M raw text: Loci 19.2 ms, Elasticsearch 34.3 ms. HotpotQA 1M precomputed vectors: Loci 6.9 ms, Elasticsearch 20.4 ms. FiQA: Loci 3.9 ms, Elasticsearch 15.7 ms.](docs/images/latency.svg)
 
 ![Recall@100 and nDCG@10 for Loci and Elasticsearch on HotpotQA 1M and FiQA. Every difference is within its 95% interval of zero.](docs/images/quality.svg)
 
-![Queries per second at 1, 4, 8, and 16 concurrent clients. HotpotQA 1M raw text: Loci 377, Elasticsearch 260 at 16 clients. FiQA: Loci 2,727, Elasticsearch 473 at 16 clients.](docs/images/throughput.svg)
+![Queries per second at 1, 4, 8, and 16 concurrent clients. HotpotQA 1M raw text: Loci 429, Elasticsearch 276 at 16 clients. FiQA: Loci 2,629, Elasticsearch 396 at 16 clients.](docs/images/throughput.svg)
 
 | Corpus | Recall@100, Loci / Elasticsearch | nDCG@10, Loci / Elasticsearch | p95 latency, Loci / Elasticsearch | Queries per second at 16 clients |
 | --- | --- | --- | --- | --- |
-| HotpotQA, 1M passages, raw text | 90.78% / 90.63% | 0.822 / 0.823 | 25.4 / 33.8 ms | 377 / 260 |
-| FiQA, 57,638 passages, precomputed vectors | 74.00% / 74.21% | 0.424 / 0.425 | 4.7 / 17.0 ms | 2,727 / 473 |
+| HotpotQA, 1M passages, raw text | 91.09% / 90.63% | 0.824 / 0.823 | 19.2 / 34.3 ms | 429 / 276 |
+| FiQA, 57,638 passages, precomputed vectors | 74.00% / 74.21% | 0.424 / 0.425 | 3.9 / 15.7 ms | 2,629 / 396 |
 
 No quality difference is statistically significant. The [benchmark results](benchmarks/benchmark.md) list the setup, paired confidence intervals, every concurrency level, and the commands to reproduce them.
 
 ## How a search runs
 
-![A query runs a BM25 keyword search for the top 60 passages and an HNSW graph search for the 150 nearest neighbours. Reciprocal rank fusion keeps 200 candidates, and a reranker weighted 92% cosine similarity and 8% term coverage returns the top hits with their document, revision, and source span.](docs/images/hybrid-flow.svg)
+![A query runs a BM25 keyword search on its 8 rarest terms for the top 60 passages and an HNSW graph search for the 150 nearest neighbours. Reciprocal rank fusion keeps 200 candidates, and a reranker weighted 92% cosine similarity and 8% term coverage returns the top hits with their document, revision, and source span.](docs/images/hybrid-flow.svg)
 
 Hybrid search, the default for text search in `loci serve`, builds two global candidate lists and merges them:
 
-1. **Keyword search.** BM25 over in-memory postings, pruned with MaxScore, returns the best 60 passages.
+1. **Keyword search.** BM25 over in-memory postings, pruned with MaxScore, returns the best 60 passages. A long question is searched on its 8 rarest terms, which keeps its cost close to a short one's.
 2. **Vector search.** An HNSW graph saved beside the index returns the 150 nearest passages.
 3. **Fusion.** Reciprocal rank fusion keeps 200 candidates and reserves slots for keyword hits.
 4. **Reranking.** Each candidate is scored 92% on cosine similarity and 8% on the IDF-weighted share of query terms it contains. A query that looks like an identifier, such as `LMP-201` or `ERR_CONNECTION_RESET`, is scored 65% on term coverage instead, so an exact code still ranks first when its embedding is poor.
@@ -53,7 +53,7 @@ Loci started as an experiment in the method of loci, the memory-palace technique
 - **Filters gave no edge.** At equal quality, filtered Elasticsearch was as fast or faster, and below 1% of the corpus a plain scan of the allowed passages won.
 - **Removing the regional scan made Loci faster.** The keyword search and the vector graph found everything the regions found. Without the regional scan, Loci kept its quality, halved its startup time, nearly halved its memory, and pulled ahead of Elasticsearch.
 
-That configuration became hybrid search in 0.4.0. Regional search is still available with `"mode": "regional"` and `--strategy regional`.
+That configuration became hybrid search in 0.4.0. Profiling it then showed that long questions spent most of their time in the keyword search. Searching only a question's 8 rarest terms widened the HotpotQA p95 lead over Elasticsearch from 25% to 44%, with no loss of recall. Regional search is still available with `"mode": "regional"` and `--strategy regional`.
 
 ## Highlights
 

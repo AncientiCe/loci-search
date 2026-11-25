@@ -93,7 +93,27 @@ The VM paged memory to swap during both raw-text runs although memory was availa
 | 8 | 310.9 | 212.6 | 1,025.0 | 464.8 |
 | 16 | 376.9 | 259.9 | 1,390.9 | 565.4 |
 
-With both engines over HTTP, equal quality, and no paging, Loci's raw-text p95 is 25% lower than Elasticsearch's, which meets the 20% target, and its engine-only p95 is 36% lower. Loci serves 1.45 times the raw-text queries per second at 16 clients and 2.5 times with precomputed vectors. This is one corpus.
+With both engines over HTTP, equal quality, and no paging, Loci's raw-text p95 is 25% lower than Elasticsearch's, which meets the 20% target, and its engine-only p95 is 36% lower. Loci serves 1.45 times the raw-text queries per second at 16 clients and 2.5 times with precomputed vectors.
+
+### FiQA, hybrid search over HTTP
+
+The same procedure on FiQA: 57,638 passages with Cohere English v3 1,024-dimension vectors, so only the precomputed-vector track can run. Hybrid settings were chosen on the 500 development queries by the same rule and frozen at 150 graph candidates, width 128, and 60 → 40 rescue hits; on development queries hybrid search reached 74.66% Recall@100 against 74.75% for an exhaustive scan and 74.18% for regional search. The 648 official test queries then ran three times on Linux with both engines over HTTP, Elasticsearch's frozen E2 settings (English analyzer, 256 kNN candidates, Loci's reranker), its heap locked, and no swap.
+
+| Engine | Candidate recall | Recall@100 | nDCG@10 | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Loci hybrid | 79.07% | 74.00% | 0.4252 | 3.36 ms | 4.20 ms | 4.59 ms |
+| Elasticsearch | 77.77% | 74.21% | 0.4261 | 13.99 ms | 15.06 ms | 16.89 ms |
+
+Loci minus Elasticsearch: nDCG@10 −0.0009 (95% interval −0.0046 to +0.0018), Recall@100 −0.21 points (−0.84 to +0.42).
+
+| Clients | Loci hybrid | Elasticsearch |
+| ---: | ---: | ---: |
+| 1 | 334.9 | 72.2 |
+| 4 | 1,279.5 | 274.4 |
+| 8 | 2,205.6 | 418.4 |
+| 16 | 2,576.5 | 473.4 |
+
+On FiQA, at equal quality, Loci's p95 is 72% lower and it serves 5.4 times the queries per second at 16 clients. Both corpora now show the same result: a tie on quality and a clear lead on latency and throughput.
 
 ## Can the topology rule regions out?
 

@@ -311,8 +311,7 @@ fn reembedded_exchange_dump_matches_the_palace_gate() {
         eprintln!("set PALACE_REEMBED=1 to re-embed all 470 haystacks");
         return;
     }
-    if !Path::new(CHUNKS).exists() || !Path::new(QUESTIONS).exists() || !Path::new(ORDER).exists()
-    {
+    if !Path::new(CHUNKS).exists() || !Path::new(QUESTIONS).exists() || !Path::new(ORDER).exists() {
         eprintln!("LongMemEval exchange dump is absent; skipping the re-embed gate");
         return;
     }
@@ -326,7 +325,10 @@ fn reembedded_exchange_dump_matches_the_palace_gate() {
     let mut neutral_all = 0usize;
     let mut questions_scored = 0usize;
     let mut mismatches = Vec::new();
-    for (line_number, line) in BufReader::new(File::open(CHUNKS).unwrap()).lines().enumerate() {
+    for (line_number, line) in BufReader::new(File::open(CHUNKS).unwrap())
+        .lines()
+        .enumerate()
+    {
         let mut case: DumpCase = serde_json::from_str(&line.unwrap()).unwrap();
         let question = &questions[&case.question_id];
         let mut texts = vec![question.question.clone()];

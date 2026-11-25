@@ -51,10 +51,7 @@ pub(super) fn validate_settings(settings: &Value) -> Result<()> {
         )),
         "unsupported index setting"
     );
-    let palace = fields
-        .get("retrieval_profile")
-        .and_then(Value::as_str)
-        == Some("palace");
+    let palace = fields.get("retrieval_profile").and_then(Value::as_str) == Some("palace");
     if let Some(profile) = fields.get("retrieval_profile") {
         ensure!(
             profile.as_str() == Some("palace"),
@@ -64,10 +61,7 @@ pub(super) fn validate_settings(settings: &Value) -> Result<()> {
     if let Some(model) = fields.get("model") {
         let name = model.as_str().context("model must be a string")?;
         if name == generation::MODEL_ID {
-            ensure!(
-                palace,
-                "minilm-l6-v2-q8 requires retrieval_profile palace"
-            );
+            ensure!(palace, "minilm-l6-v2-q8 requires retrieval_profile palace");
         } else if palace || name == "lexical" {
             ensure!(!palace, "palace text indexes use minilm-l6-v2-q8");
         } else {

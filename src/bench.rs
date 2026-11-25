@@ -912,8 +912,7 @@ fn measure_throughput(
                             let mut encoder = encoder?;
                             let mut times = Vec::new();
                             loop {
-                                let index =
-                                    next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 if index >= total {
                                     return Ok(times);
                                 }

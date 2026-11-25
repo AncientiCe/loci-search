@@ -587,7 +587,9 @@ fn hold_open_reader() {
     let hold = PALACE_HOLD.lock().expect("palace hold").take();
     if let Some(hold) = hold {
         let _ = hold.entered.send(());
-        let _ = hold.release.recv_timeout(std::time::Duration::from_secs(60));
+        let _ = hold
+            .release
+            .recv_timeout(std::time::Duration::from_secs(60));
     }
 }
 
@@ -757,7 +759,12 @@ mod tests {
         }
         let url = std::env::var("LOCI_POSTGRES_URL").expect("LOCI_POSTGRES_URL");
         let running = std::process::Command::new("docker")
-            .args(["inspect", "-f", "{{.State.Running}}", "loci-search-postgres-1"])
+            .args([
+                "inspect",
+                "-f",
+                "{{.State.Running}}",
+                "loci-search-postgres-1",
+            ])
             .output()
             .expect("docker inspect");
         assert!(
@@ -780,11 +787,19 @@ mod tests {
             "retrieval_profile": "palace"
         });
         assert_eq!(
-            code(agent.put(format!("{base}/v1/indexes/{index}")).send_json(&settings)),
+            code(
+                agent
+                    .put(format!("{base}/v1/indexes/{index}"))
+                    .send_json(&settings)
+            ),
             200
         );
         assert_eq!(
-            code(agent.put(format!("{base}/v1/indexes/logs")).send_json(json!({"model":"lexical"}))),
+            code(
+                agent
+                    .put(format!("{base}/v1/indexes/logs"))
+                    .send_json(json!({"model":"lexical"}))
+            ),
             200
         );
         assert_eq!(
@@ -795,7 +810,11 @@ mod tests {
         );
         let corpus = corpus_body("1");
         assert_eq!(
-            code(agent.post(format!("{base}/v1/indexes/{index}/bulk")).send_json(&corpus)),
+            code(
+                agent
+                    .post(format!("{base}/v1/indexes/{index}/bulk"))
+                    .send_json(&corpus)
+            ),
             200
         );
         let first = palace_hits(&agent, &base, &index, None);
@@ -806,12 +825,24 @@ mod tests {
             "{first}"
         );
         let generation = first_generation(&agent, &base, &index);
-        let hnsw = dir.path().join("indexes").join(&index).join("generations").join(&generation).join("retrieval.sqlite.hnsw");
-        assert!(hnsw.is_file(), "published generation includes the hnsw sidecar");
+        let hnsw = dir
+            .path()
+            .join("indexes")
+            .join(&index)
+            .join("generations")
+            .join(&generation)
+            .join("retrieval.sqlite.hnsw");
+        assert!(
+            hnsw.is_file(),
+            "published generation includes the hnsw sidecar"
+        );
 
         let paused = pause_postgres_and_elasticsearch();
         let during = palace_hits(&agent, &base, &index, None);
-        assert_eq!(during, first, "query changed while PostgreSQL and Elasticsearch were stopped");
+        assert_eq!(
+            during, first,
+            "query changed while PostgreSQL and Elasticsearch were stopped"
+        );
         let mut lexical = agent
             .post(format!("{base}/v1/indexes/logs/search"))
             .send_json(json!({"text":"kept","limit":1}))
@@ -822,10 +853,18 @@ mod tests {
         wait_postgres(&url);
 
         assert_eq!(
-            code(agent.post(format!("{base}/v1/indexes/{index}/bulk")).send_json(&corpus)),
+            code(
+                agent
+                    .post(format!("{base}/v1/indexes/{index}/bulk"))
+                    .send_json(&corpus)
+            ),
             200
         );
-        assert_eq!(palace_hits(&agent, &base, &index, None), first, "retry changed the hits");
+        assert_eq!(
+            palace_hits(&agent, &base, &index, None),
+            first,
+            "retry changed the hits"
+        );
 
         let root = dir.path().join("indexes").join(&index);
         let partial = loci_search::durable::Generations::open(&root)
@@ -834,26 +873,45 @@ mod tests {
             .unwrap();
         std::fs::write(partial.join("manifest.json"), b"{").unwrap();
         assert_eq!(
-            code(agent.post(format!("{base}/v1/indexes/{index}/rebuild")).send_json(json!({}))),
+            code(
+                agent
+                    .post(format!("{base}/v1/indexes/{index}/rebuild"))
+                    .send_json(json!({}))
+            ),
             200
         );
-        assert!(partial.is_dir(), "a partial staging directory stays unpublished");
+        assert!(
+            partial.is_dir(),
+            "a partial staging directory stays unpublished"
+        );
         assert_eq!(palace_hits(&agent, &base, &index, None), first);
 
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
-            code(agent.post(format!("{base}/v1/indexes/{index}/search")).send_json(json!({"text":"brass telescope"}))),
+            code(
+                agent
+                    .post(format!("{base}/v1/indexes/{index}/search"))
+                    .send_json(json!({"text":"brass telescope"}))
+            ),
             404
         );
 
         let clean = tempfile::tempdir().unwrap();
         let rebuilt = serve_at(clean.path());
         assert_eq!(
-            code(agent.put(format!("{rebuilt}/v1/indexes/{index}")).send_json(&settings)),
+            code(
+                agent
+                    .put(format!("{rebuilt}/v1/indexes/{index}"))
+                    .send_json(&settings)
+            ),
             200
         );
         assert_eq!(
-            code(agent.post(format!("{rebuilt}/v1/indexes/{index}/rebuild")).send_json(json!({}))),
+            code(
+                agent
+                    .post(format!("{rebuilt}/v1/indexes/{index}/rebuild"))
+                    .send_json(json!({}))
+            ),
             200
         );
         assert_eq!(palace_hits(&agent, &rebuilt, &index, None), first);
@@ -883,7 +941,10 @@ mod tests {
         release_tx.send(()).unwrap();
         let held_page = inflight.join().unwrap();
         let held = held_page["hits"].clone();
-        assert_eq!(held, first, "an open reader changed during document replacement");
+        assert_eq!(
+            held, first,
+            "an open reader changed during document replacement"
+        );
         assert!(hit_rows(&held).iter().any(|hit| {
             let citation = hit["citation"].as_str().unwrap();
             citation.contains("north cabinet") && !citation.contains("oak drawers")
@@ -895,12 +956,7 @@ mod tests {
                 .any(|hit| hit["citation"].as_str().unwrap().contains("oak drawers"))
         );
         assert_ne!(latest, held);
-        let pinned = palace_hits(
-            &agent,
-            &rebuilt,
-            &index,
-            held_page["generation"].as_str(),
-        );
+        let pinned = palace_hits(&agent, &rebuilt, &index, held_page["generation"].as_str());
         assert_eq!(pinned, held);
     }
 
@@ -908,13 +964,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let data = data.to_path_buf();
         std::thread::spawn(move || {
-            listen(
-                "127.0.0.1:0".parse().unwrap(),
-                &data,
-                None,
-                Some(sender),
-            )
-            .unwrap();
+            listen("127.0.0.1:0".parse().unwrap(), &data, None, Some(sender)).unwrap();
         });
         let addr = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
         format!("http://{addr}")
@@ -944,7 +994,12 @@ mod tests {
         value.as_array().map(Vec::as_slice).unwrap_or(&[])
     }
 
-    fn palace_hits(agent: &ureq::Agent, base: &str, index: &str, generation: Option<&str>) -> Value {
+    fn palace_hits(
+        agent: &ureq::Agent,
+        base: &str,
+        index: &str,
+        generation: Option<&str>,
+    ) -> Value {
         let _ = agent;
         palace_page(base, index, generation)["hits"].clone()
     }
@@ -986,10 +1041,8 @@ mod tests {
     impl Drop for SchemaDrop {
         fn drop(&mut self) {
             if let Ok(mut client) = postgres::Client::connect(&self.url, postgres::NoTls) {
-                let _ = client.batch_execute(&format!(
-                    "DROP SCHEMA IF EXISTS {} CASCADE",
-                    self.schema
-                ));
+                let _ =
+                    client.batch_execute(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.schema));
             }
         }
     }

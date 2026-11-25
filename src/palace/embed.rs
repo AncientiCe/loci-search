@@ -7,8 +7,8 @@ use anyhow::{Context, Result, anyhow, ensure};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const DIMENSIONS: usize = 384;
 const RECORD: usize = DIMENSIONS * 4;
@@ -230,7 +230,10 @@ fn flush_batch(
     }
     let refs: Vec<&str> = batch.iter().map(String::as_str).collect();
     let vectors = encoder.embed(&refs)?;
-    ensure!(vectors.len() == batch.len(), "encoder returned a short batch");
+    ensure!(
+        vectors.len() == batch.len(),
+        "encoder returned a short batch"
+    );
     for vector in vectors {
         ensure!(vector.len() == DIMENSIONS, "MiniLM vector width changed");
         for value in vector {
@@ -241,7 +244,10 @@ fn flush_batch(
     batch.clear();
     if written.is_multiple_of(1000) {
         let elapsed = started.elapsed().as_secs_f64().max(0.001);
-        eprintln!("encoded {written} passages ({:.0}/s)", written as f64 / elapsed);
+        eprintln!(
+            "encoded {written} passages ({:.0}/s)",
+            written as f64 / elapsed
+        );
     }
     Ok(written)
 }

@@ -60,10 +60,7 @@ pub fn minilm_embedding() -> Embedding {
 }
 
 pub fn is_palace(settings: &Value) -> bool {
-    settings
-        .get("retrieval_profile")
-        .and_then(Value::as_str)
-        == Some("palace")
+    settings.get("retrieval_profile").and_then(Value::as_str) == Some("palace")
 }
 
 pub fn index_root(data: &Path, name: &str) -> PathBuf {
@@ -117,7 +114,10 @@ pub struct TextUpdate {
 
 /// Commit the changes, then publish one generation from the live passages.
 pub fn commit_and_publish(durable: &mut Durable, changes: &[TextChange]) -> Result<PublishedIds> {
-    ensure!(!changes.is_empty(), "at least one document change is required");
+    ensure!(
+        !changes.is_empty(),
+        "at least one document change is required"
+    );
     let mut pending = Vec::new();
     for change in changes {
         if let TextChange::Upsert(update) = change {
@@ -258,7 +258,9 @@ pub fn search_text(
     };
     let mut engine = Engine::open(reader.sqlite_path())?;
     before_score();
-    let vector = embed_texts(&[text])?.pop().context("missing query vector")?;
+    let vector = embed_texts(&[text])?
+        .pop()
+        .context("missing query vector")?;
     let query = Query {
         id: "http".into(),
         text: text.to_string(),

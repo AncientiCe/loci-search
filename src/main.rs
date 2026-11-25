@@ -347,7 +347,8 @@ fn main() -> Result<()> {
             schema,
             root,
         } => {
-            let mut durable = loci_search::durable::Durable::open_schema(&database_url, &schema, &root)?;
+            let mut durable =
+                loci_search::durable::Durable::open_schema(&database_url, &schema, &root)?;
             print_json(&loci_search::generation::publish_live(&mut durable)?)?;
         }
         Command::GenerationSearch {

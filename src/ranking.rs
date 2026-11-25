@@ -147,7 +147,10 @@ impl SearchConfig {
             self.graph_candidates.is_none_or(|count| count > 0),
             "graph candidates must be positive"
         );
-        for weights in [self.regional_rerank, self.elastic_rerank].into_iter().flatten() {
+        for weights in [self.regional_rerank, self.elastic_rerank]
+            .into_iter()
+            .flatten()
+        {
             weights.validate()?;
         }
         Ok(())

@@ -629,7 +629,10 @@ impl Engine {
             }
             _ => true,
         };
-        ensure!(ready, "prepare the engine for {strategy:?} before a shared search");
+        ensure!(
+            ready,
+            "prepare the engine for {strategy:?} before a shared search"
+        );
         let vector = self.query_vector(query)?;
         ranking::search(self, query, &vector, strategy, config)
     }

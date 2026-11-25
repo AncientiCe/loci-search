@@ -131,11 +131,7 @@ fn development_half_records_miss_reasons_without_tuning_weights() {
             .search(&query, Strategy::Regional, &budget(5, 40, 12, 6000))
             .unwrap();
         let regional_wide = engine
-            .search(
-                &query,
-                Strategy::Regional,
-                &budget(5, 200, 36, 24_000),
-            )
+            .search(&query, Strategy::Regional, &budget(5, 200, 36, 24_000))
             .unwrap();
         for gold in &case.answer_session_ids {
             let rank = order.iter().position(|id| id == gold).map(|rank| rank + 1);
@@ -152,7 +148,11 @@ fn development_half_records_miss_reasons_without_tuning_weights() {
         if questions_scored.is_multiple_of(20) {
             eprintln!(
                 "ledger {questions_scored} global {:?} regional {:?}",
-                (global.never_visited, global.outside_budget, global.ranked_too_low),
+                (
+                    global.never_visited,
+                    global.outside_budget,
+                    global.ranked_too_low
+                ),
                 (
                     regional.never_visited,
                     regional.outside_budget,
@@ -185,7 +185,10 @@ type HashMapDates = std::collections::HashMap<String, String>;
 fn metadata(created: Option<&String>, filed: &str) -> BTreeMap<String, serde_json::Value> {
     let mut metadata = BTreeMap::new();
     if let Some(created) = created {
-        metadata.insert("created_at".into(), serde_json::Value::String(created.clone()));
+        metadata.insert(
+            "created_at".into(),
+            serde_json::Value::String(created.clone()),
+        );
     }
     metadata.insert("filed_at".into(), serde_json::Value::String(filed.into()));
     metadata

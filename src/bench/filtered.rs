@@ -287,13 +287,7 @@ pub fn filter_dev(
             &positives,
         )];
         for ((name, config), samples) in plans.into_iter().zip(&loci) {
-            engines.push(summarize(
-                name,
-                Some(config),
-                samples,
-                &oracle,
-                &positives,
-            ));
+            engines.push(summarize(name, Some(config), samples, &oracle, &positives));
         }
         if elastic.is_some() {
             for (candidates, samples) in candidate_counts.iter().zip(&es) {

@@ -84,7 +84,9 @@ Each passage and embedding is stored once in SQLite. A passage can belong to up 
 
 ![Held-out Recall@100 and warm p95 latency for Loci regional search and tuned Elasticsearch on HotpotQA 1M, FiQA, and NFCorpus.](docs/images/benchmarks.svg)
 
-In the recorded held-out HotpotQA run on one million passages, Loci regional search reached **89.38% Recall@100** at **31.01 ms warm p95**. Tuned Elasticsearch in the same run reached **90.00%** at **41.20 ms warm p95**. The paired recall difference was −0.63 percentage points with a 95% interval of −2.03 to +0.78. On FiQA and NFCorpus, settings were selected on development queries and frozen before scoring the official test queries.
+**Loci matches Elasticsearch but does not beat it.** In the latest comparison, both engines took raw query text on Linux, with the same `bge-small-en-v1.5` vectors and the same reranker. Loci tied Elasticsearch on HotpotQA 1M and FiQA in Recall@100 and nDCG@10. Elasticsearch had the lower one-query latency, 34.3 ms p95 against 37.5 ms. At 16 concurrent clients, Loci served 1.24 times the queries per second. Earlier quality leads over Elasticsearch came from Loci's reranker, which Elasticsearch candidates can use too. A Windows-only throughput lead turned out to be an Elasticsearch-on-Windows limit. See [the raw-text verdict](benchmarks/README.md#raw-text-verdict-against-elasticsearch) for the numbers.
+
+The rest of this section records earlier runs. In the recorded held-out HotpotQA run on one million passages, Loci regional search reached **89.38% Recall@100** at **31.01 ms warm p95**. Tuned Elasticsearch in the same run reached **90.00%** at **41.20 ms warm p95**. The paired recall difference was −0.63 percentage points with a 95% interval of −2.03 to +0.78. On FiQA and NFCorpus, settings were selected on development queries and frozen before scoring the official test queries.
 
 These are historical single-machine, sequential results, and the three corpora were measured with different engine versions. Earlier configurations on the same corpora had different recall and latency trade-offs. [Methods, settings, and full history](benchmarks/README.md)
 

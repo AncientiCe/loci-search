@@ -2,6 +2,41 @@
 
 The latency columns summarize all recorded warm sequential queries. The [machine-readable history](history.json) includes per-pass timings, dev trials, index preparation, and exact settings. See the [reproduction instructions](reproduce.md) for the corpus and launch steps.
 
+## Raw-text verdict against Elasticsearch
+
+These runs asked whether Loci beats Elasticsearch when both receive query text, not precomputed vectors. Every sample includes encoding the query with `bge-small-en-v1.5`, about 9 ms at p50. Both engines searched the same one million HotpotQA passages and vectors and returned 100 hits for each of the 320 held-out queries, three passes each.
+
+Loci used the settings that had won on the earlier precomputed-vector runs: a 12,000-passage regional budget, 100 HNSW candidates, int8 scanning with 400 exact re-scores, bounded MaxScore rescue, and the 8% coverage, 92% cosine reranker. Both the 12,000 and 24,000 budgets reached 92.2% development Recall@100, so the faster one was frozen. Elasticsearch 8.19.25 ran its English analyzer with 256 kNN candidates, which matched its development recall, a 4 GiB heap, and 16 processors.
+
+On Linux, in a Docker Desktop VM with 16 CPUs and 16 GiB, both engines ran on the same VM:
+
+| Strategy | Recall@100 | nDCG@10 | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Loci regional | 91.09% | 0.8223 | 26.26 ms | 37.49 ms | 42.35 ms |
+| Elasticsearch | 90.31% | 0.7900 | 24.67 ms | 34.25 ms | 39.23 ms |
+
+Queries per second with concurrent clients on one shared, prepared engine. Each worker encodes its own queries:
+
+| Clients | Loci | Elasticsearch |
+| ---: | ---: | ---: |
+| 1 | 33.0 | 35.8 |
+| 4 | 124.3 | 136.7 |
+| 8 | 219.5 | 200.2 |
+| 16 | 281.6 | 227.2 |
+
+On Windows, Elasticsearch stopped at about 104 hybrid queries per second while using under 60% of the CPU, and Loci reached three times its throughput. The same Elasticsearch index on Linux served 547 hybrid queries per second when queried directly, so the Windows lead does not hold.
+
+The 0.032 nDCG@10 lead in the Linux run came from the reranker. That run reranked Elasticsearch candidates with the default 65% coverage, 25% cosine, and 10% fusion weights. With `elastic_rerank` set to Loci's weights, Elasticsearch matched Loci:
+
+| Corpus | Loci Recall@100 / nDCG@10 | Elasticsearch, same reranker | Loci − Elasticsearch nDCG@10 (95% interval) |
+| --- | --- | --- | --- |
+| HotpotQA 1M, raw text | 91.09% / 0.8223 | 90.62% / 0.8225 | −0.0002 (−0.0029 to +0.0025) |
+| FiQA | 73.64% / 0.4266 | 74.21% / 0.4261 | +0.0005 (−0.0022 to +0.0036) |
+
+The earlier FiQA result, 8.67 percentage points of Recall@100 above Elasticsearch, therefore measured the reranker, not the engine. The NFCorpus control did not run because the Elasticsearch index statistics no longer matched its frozen report.
+
+With the same embeddings and reranker, Loci matches Elasticsearch on recall and top-10 quality and does not beat it on latency or throughput. The cosine-heavy reranker over fused BM25 and kNN candidates helped both engines.
+
 ## Query latency and recall
 
 | Run | Passages | Queries × passes | Strategy | Recall@100 | Warm p50 | Warm p95 |

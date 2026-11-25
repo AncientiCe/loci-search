@@ -372,12 +372,12 @@ fn ablations(frozen: &SearchConfig, corpus: usize) -> Vec<(String, SearchConfig)
         }),
     ));
     // No regional scan: the global graph, bounded rescue, and the reranker only.
-    for (graph, width, rescue) in [
-        (100, 256, 40),
-        (200, 256, 40),
-        (200, 256, 100),
-        (200, 128, 100),
-    ] {
+    let grid = [150, 200, 300].into_iter().flat_map(|graph| {
+        [128, 256]
+            .into_iter()
+            .flat_map(move |width| [40, 60].map(|rescue| (graph, width, rescue)))
+    });
+    for (graph, width, rescue) in grid {
         plans.push((
             format!("graph_{graph}_width_{width}_rescue_{rescue}_no_regions"),
             with(&|config| {

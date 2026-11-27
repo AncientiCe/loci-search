@@ -72,7 +72,7 @@ fn mutation(mut obj: Map<String, Value>) -> Result<Mutation> {
     if obj.contains_key("op") {
         return Ok(serde_json::from_value(Value::Object(obj))?);
     }
-    let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&obj)?));
+    let revision = sha256_hex(&serde_json::to_vec(&obj)?);
     let id = obj
         .remove("id")
         .and_then(|x| x.as_str().map(str::to_owned))
@@ -173,7 +173,7 @@ pub fn import(url: &str, index: &str, files: &[PathBuf]) -> Result<()> {
             }
             Some("txt" | "md" | "markdown") => {
                 let text = fs::read_to_string(path)?;
-                let revision = format!("{:x}", Sha256::digest(text.as_bytes()));
+                let revision = sha256_hex(text.as_bytes());
                 let id = path
                     .to_str()
                     .context("invalid source path")?
@@ -195,4 +195,15 @@ pub fn import(url: &str, index: &str, files: &[PathBuf]) -> Result<()> {
     flush(&mut pending)?;
     writeln!(std::io::stdout(), "Imported {sent} operations into {index}")?;
     Ok(())
+}
+
+/// Lowercase hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }

@@ -48,7 +48,7 @@ impl Asset {
             output.write_all(&buffer[..count])?;
         }
         ensure!(
-            size == self.bytes && format!("{:x}", hash.finalize()) == self.sha256,
+            size == self.bytes && crate::hex(&hash.finalize()) == self.sha256,
             "{} does not match its pinned checksum and length",
             self.name
         );
@@ -181,10 +181,10 @@ impl ModelPack {
         }
         Embedding {
             model_revision: format!(
-                "{}@{}#{:x}",
+                "{}@{}#{}",
                 self.repository(),
                 self.revision(),
-                hash.finalize()
+                crate::hex(&hash.finalize())
             ),
             dimensions: 384,
             normalization: Normalization::L2,

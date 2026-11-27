@@ -395,10 +395,8 @@ fn unpack_vector(bytes: &[u8]) -> Result<Vec<f32>> {
         bytes.len() == DIMENSIONS * 4,
         "stored embedding has the wrong length"
     );
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk length")))
-        .collect())
+    let (chunks, _) = bytes.as_chunks::<4>();
+    Ok(chunks.iter().copied().map(f32::from_le_bytes).collect())
 }
 
 fn checkpoint(sqlite: &Path) -> Result<()> {

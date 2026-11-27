@@ -143,10 +143,8 @@ impl Worker {
         self.stdin.flush()?;
         let mut packed = [0u8; RECORD];
         self.stdout.read_exact(&mut packed)?;
-        Ok(packed
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect())
+        let (chunks, _) = packed.as_chunks::<4>();
+        Ok(chunks.iter().copied().map(f32::from_le_bytes).collect())
     }
 
     fn shutdown(mut self) -> Result<()> {

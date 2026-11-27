@@ -562,7 +562,7 @@ impl Engine {
                 hasher.update(value.to_le_bytes());
             }
         }
-        Ok(format!("{:x}", hasher.finalize()))
+        Ok(crate::hex(&hasher.finalize()))
     }
 
     pub(crate) fn nearest_dense(

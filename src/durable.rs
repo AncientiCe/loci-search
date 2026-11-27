@@ -1015,7 +1015,7 @@ fn digest(commit: &SourceCommit) -> Result<String> {
         write_len(&mut hasher, &serde_json::to_vec(&passage.metadata)?);
         write_len(&mut hasher, &passage.embedding);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::hex(&hasher.finalize()))
 }
 
 fn write_len(hasher: &mut Sha256, bytes: &[u8]) {

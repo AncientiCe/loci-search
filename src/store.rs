@@ -238,8 +238,7 @@ impl Catalog {
         }
         let request = key
             .map(|_| {
-                serde_json::to_vec(mutations)
-                    .map(|payload| format!("{:x}", Sha256::digest(payload)))
+                serde_json::to_vec(mutations).map(|payload| crate::hex(&Sha256::digest(payload)))
             })
             .transpose()?;
         if let Some(key) = key {

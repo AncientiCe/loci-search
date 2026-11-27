@@ -102,6 +102,17 @@ fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
     })
 }
 
+/// Lowercase hex of a digest.
+fn hex(digest: &[u8]) -> String {
+    use std::fmt::Write;
+    digest
+        .iter()
+        .fold(String::with_capacity(digest.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
     let (left, left_tail) = left.as_chunks::<8>();
     let (right, right_tail) = right.as_chunks::<8>();
